@@ -1,5 +1,6 @@
 package com.quince.cartrecovery.core;
 
+import java.util.Collections;
 import java.util.Map;
 import java.util.TreeMap;
 
@@ -15,7 +16,8 @@ public final class Metrics {
         return counters.getOrDefault(name, 0L);
     }
 
+    /** A read-only copy, sorted by name. */
     public Map<String, Long> snapshot() {
-        return Map.copyOf(counters);
+        return Collections.unmodifiableMap(new TreeMap<>(counters));
     }
 }

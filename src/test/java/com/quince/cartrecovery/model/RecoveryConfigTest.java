@@ -41,6 +41,33 @@ class RecoveryConfigTest {
     }
 
     @Test
+    void rejectsNonPositiveDurationsAndNegativeLatenessBounds() {
+        Duration zero = Duration.ZERO;
+        Duration m30 = Duration.ofMinutes(30);
+        List<Duration> offsets = List.of(m30, Duration.ofHours(1));
+        List<Duration> bounds = List.of(Duration.ofMinutes(5), Duration.ofMinutes(5));
+        Duration week = Duration.ofDays(7);
+        Duration minute = Duration.ofMinutes(1);
+
+        assertThrows(IllegalArgumentException.class, () ->
+            new RecoveryConfig(zero, offsets, bounds, 3, week, 10, 5, minute), "window");
+        assertThrows(IllegalArgumentException.class, () ->
+            new RecoveryConfig(m30, offsets, List.of(Duration.ofMinutes(-1), Duration.ofMinutes(5)), 3, week, 10, 5, minute),
+            "lateness bound");
+        assertThrows(IllegalArgumentException.class, () ->
+            new RecoveryConfig(m30, offsets, bounds, 3, zero, 10, 5, minute), "frequencyWindow");
+        assertThrows(IllegalArgumentException.class, () ->
+            new RecoveryConfig(m30, offsets, bounds, 3, week, 10, 5, zero), "retryBase");
+    }
+
+    @Test
+    void acceptsAZeroLatenessBound() {
+        RecoveryConfig c = RecoveryConfig.defaults()
+            .withLatenessBounds(List.of(Duration.ZERO, Duration.ZERO, Duration.ZERO));
+        assertEquals(Duration.ZERO, c.latenessBounds().get(0));
+    }
+
+    @Test
     void withOffsetsResizesLatenessBoundsToMatch() {
         RecoveryConfig c = RecoveryConfig.defaults()
             .withOffsets(List.of(Duration.ofMinutes(30), Duration.ofHours(2)));

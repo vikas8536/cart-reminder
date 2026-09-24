@@ -158,6 +158,19 @@ class ReminderSchedulerTest {
     }
 
     @Test
+    void reminderExactlyAtTheLatenessBoundIsWritten() {
+        CartRecord r = activeRecord(1, Arm.TREATMENT);
+        store.put(r.abandoned(), 1);
+        clock.set(at(min(35)));
+
+        scheduler.onTimer(Timer.reminder(CART, 1, 0, at(min(30))));
+
+        assertEquals(1, ledger.size());
+        assertEquals(1, outbox.size());
+        assertEquals(0, metrics.get("reminders.skipped_late"));
+    }
+
+    @Test
     void reminderForOlderCycleIsDroppedAfterReopenAndReabandon() {
         CartRecord r = activeRecord(1, Arm.TREATMENT);
         CartRecord secondCycle = r.abandoned().closed(2, at(min(40))).activity(3, at(min(50)), ITEMS).abandoned();

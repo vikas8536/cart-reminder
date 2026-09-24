@@ -10,6 +10,7 @@ public record RecoveryConfig(Duration window, List<Duration> offsets, List<Durat
     public RecoveryConfig {
         offsets = List.copyOf(offsets);
         latenessBounds = List.copyOf(latenessBounds);
+        if (!window.isPositive()) throw new IllegalArgumentException("window must be positive");
         if (offsets.isEmpty()) throw new IllegalArgumentException("at least one offset required");
         if (offsets.get(0).compareTo(window) < 0)
             throw new IllegalArgumentException("first offset " + offsets.get(0) + " must be >= window " + window);
@@ -19,6 +20,10 @@ public record RecoveryConfig(Duration window, List<Duration> offsets, List<Durat
         }
         if (latenessBounds.size() != offsets.size())
             throw new IllegalArgumentException("one lateness bound per offset required");
+        if (latenessBounds.stream().anyMatch(Duration::isNegative))
+            throw new IllegalArgumentException("lateness bounds must not be negative");
+        if (!frequencyWindow.isPositive()) throw new IllegalArgumentException("frequencyWindow must be positive");
+        if (!retryBase.isPositive()) throw new IllegalArgumentException("retryBase must be positive");
         if (frequencyCap < 0 || holdoutPercent < 0 || holdoutPercent > 100 || maxSendAttempts < 1)
             throw new IllegalArgumentException("invalid numeric config");
     }
