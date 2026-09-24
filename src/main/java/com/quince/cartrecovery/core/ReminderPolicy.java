@@ -11,7 +11,10 @@ public final class ReminderPolicy {
 
     public ReminderPolicy(RecoveryConfig config) { this.config = config; }
 
-    /** Holdout carts never get reminders. Others are capped on sequences started within the frequency window. */
+    /**
+     * Holdout carts never get reminders. Others are capped on sequences started within the frequency window.
+     * The record must already include the current sequence start (i.e. returned by CartRecord.abandoned()), so <code>&lt;=</code> allows exactly frequencyCap sequences.
+     */
     public boolean eligible(CartRecord record, Instant now) {
         if (record.arm() == Arm.HOLDOUT) return false;
         Instant windowStart = now.minus(config.frequencyWindow());
