@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.quince.cartrecovery.model.Arm;
 import com.quince.cartrecovery.model.CartRecord;
 import com.quince.cartrecovery.model.RecoveryConfig;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
@@ -63,26 +64,53 @@ class ReminderPolicyTest {
     }
 
     @Test
-    void oldSequenceStartsOutsideWindowDoNotCountTowardsCap() {
-        // Build a record with 3 old starts (> 7 days ago) and 1 recent (within window)
-        Instant eightDaysAgo = at(hrs(-192)); // 8 days before T0
-        Instant sevenDaysAgo = at(hrs(-168)); // 7 days before T0 (still outside window from `now`)
-        Instant threeDaysAgo = at(hrs(-72)); // 3 days before T0
-
-        // Use canonical constructor to create record with explicit sequenceStarts
+    void excludedJustOutsideWindow() {
+        // Window is 7 days (168 hours). Default cap is 3.
+        // now = T0, windowStart = T0 - 168h, so starts must be >= windowStart to count.
+        // starts: [T0 - 169h (outside), T0 - 48h (in), T0 - 24h (in), T0 (in)]
+        // Recent = 3, exactly at cap → eligible TRUE
+        Instant now = T0;
         CartRecord record = new CartRecord(
             CART, SHOPPER,
             com.quince.cartrecovery.model.CartStatus.ABANDONED,
             4L,
-            at(min(0)), // lastActivityAt is current (recently abandoned)
+            now,
             ITEMS,
             Arm.TREATMENT,
-            List.of(eightDaysAgo, sevenDaysAgo, threeDaysAgo, at(min(0))) // 4 starts total
+            List.of(
+                now.minus(Duration.ofHours(169)), // just outside 7-day window
+                now.minus(Duration.ofHours(48)),  // within window
+                now.minus(Duration.ofHours(24)),  // within window
+                now                               // within window
+            )
         );
 
-        Instant now = at(hrs(0));
-        // Window is 7 days, so starts before (now - 7 days) = (T0 - 7 days) don't count
-        // eightDaysAgo and sevenDaysAgo are outside, only threeDaysAgo and current count = 2
         assertTrue(policy.eligible(record, now));
+    }
+
+    @Test
+    void includedAtWindowBoundary() {
+        // Window is 7 days (168 hours). Default cap is 3.
+        // now = T0, windowStart = T0 - 168h, so starts must be >= windowStart to count.
+        // starts: [T0 - 168h (at boundary, IN), T0 - 48h (in), T0 - 24h (in), T0 (in)]
+        // Recent = 4, exceeds cap of 3 → eligible FALSE
+        // (If filter were inverted, recent = 0, would be TRUE, failing this test)
+        Instant now = T0;
+        CartRecord record = new CartRecord(
+            CART, SHOPPER,
+            com.quince.cartrecovery.model.CartStatus.ABANDONED,
+            4L,
+            now,
+            ITEMS,
+            Arm.TREATMENT,
+            List.of(
+                now.minus(Duration.ofHours(168)), // exactly at 7-day window boundary
+                now.minus(Duration.ofHours(48)),  // within window
+                now.minus(Duration.ofHours(24)),  // within window
+                now                               // within window
+            )
+        );
+
+        assertFalse(policy.eligible(record, now));
     }
 }
