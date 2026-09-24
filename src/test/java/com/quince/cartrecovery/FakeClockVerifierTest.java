@@ -158,20 +158,55 @@ class FakeClockVerifierTest {
         assertEquals(0, p.dlq().size());
     }
 
-    @Test @DisplayName("9. permanent failure dead-letters, replay sends once")
+    @Test @DisplayName("9. permanent failure dead-letters, replay inside the lateness bound sends once")
     void permanentFailureAndReplay() {
         Pipeline p = pipeline();
         p.sink().scriptOutcomes(SendResult.PERMANENT_FAILURE);
         p.ingest(edited(1, min(0)));
-        p.advanceTo(at(min(40)));
+        p.advanceTo(at(min(32)));
         assertEquals(0, p.sink().sent().size());
         assertEquals(1, p.dlq().size());
 
         p.replayDeadLetters();
-        p.replayDeadLetters();
-
+        assertEquals(List.of(at(min(32))), sentTimes(p));
         assertEquals(List.of("cart-1:1:0"), sentKeys(p));
         assertEquals(0, p.dlq().size());
+
+        p.replayDeadLetters();
+        assertEquals(1, p.sink().sent().size());
+        assertEquals(1, p.metrics().get("dispatch.replayed"));
+    }
+
+    @Test @DisplayName("9b. replay after the lateness bound is dropped, not sent")
+    void replayAfterLatenessBound() {
+        Pipeline p = pipeline();
+        p.sink().scriptOutcomes(SendResult.PERMANENT_FAILURE);
+        p.ingest(edited(1, min(0)));
+        p.advanceTo(at(min(40)));
+        assertEquals(1, p.dlq().size());
+
+        p.replayDeadLetters();
+
+        assertEquals(List.of(), sentTimes(p));
+        assertEquals(0, p.dlq().size());
+        assertEquals(0, p.outbox().size());
+        assertEquals(1, p.metrics().get("dispatch.skipped_late"));
+    }
+
+    @Test @DisplayName("9c. replay after purchase is cancelled, not sent")
+    void replayAfterPurchase() {
+        Pipeline p = pipeline();
+        p.sink().scriptOutcomes(SendResult.PERMANENT_FAILURE);
+        p.ingest(edited(1, min(0)));
+        p.advanceTo(at(min(32)));
+        p.ingest(purchased(2, min(32)));
+
+        p.replayDeadLetters();
+
+        assertEquals(List.of(), sentTimes(p));
+        assertEquals(0, p.outbox().size());
+        assertEquals(1, p.metrics().get("dispatch.cancelled"));
+        assertEquals(0, p.metrics().get("dispatch.skipped_late"));
     }
 
     @Test @DisplayName("10. restart between abandonment and next reminder: reminders still fire on time")

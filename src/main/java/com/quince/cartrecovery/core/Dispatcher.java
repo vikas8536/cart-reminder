@@ -3,6 +3,7 @@ package com.quince.cartrecovery.core;
 import com.quince.cartrecovery.model.CartRecord;
 import com.quince.cartrecovery.model.CartStatus;
 import com.quince.cartrecovery.model.DeadLetter;
+import com.quince.cartrecovery.model.NotificationIntent;
 import com.quince.cartrecovery.model.OutboxEntry;
 import com.quince.cartrecovery.model.RecoveryConfig;
 import com.quince.cartrecovery.model.SendResult;
@@ -16,9 +17,10 @@ import java.time.Instant;
 import java.util.Optional;
 
 /**
- * Drains the outbox. Re-validates the cart immediately before each send attempt,
- * retries transient failures with exponential backoff, dead-letters permanent failures
- * and exhausted retries, and replays dead letters under their original idempotency key.
+ * Drains the outbox. Re-validates the cart and the reminder's lateness bound immediately
+ * before each send attempt, retries transient failures with exponential backoff, dead-letters
+ * permanent failures and exhausted retries, and replays dead letters under their original
+ * idempotency key.
  */
 public final class Dispatcher {
     private final RecoveryConfig config;
@@ -48,6 +50,11 @@ public final class Dispatcher {
                 metrics.increment("dispatch.cancelled");
                 continue;
             }
+            if (late(entry, now)) {
+                outbox.remove(entry.key());
+                metrics.increment("dispatch.skipped_late");
+                continue;
+            }
             SendResult result = sink.send(entry.intent());
             switch (result) {
                 case SENT -> {
@@ -68,6 +75,10 @@ public final class Dispatcher {
         }
     }
 
+    /**
+     * Re-enqueues every dead letter under its original key. The next drain applies the same
+     * checks as any attempt, so a replay for a purchased cart or past its lateness bound is dropped.
+     */
     public void replayDeadLetters() {
         for (DeadLetter letter : dlq.drain()) {
             outbox.add(new OutboxEntry(letter.intent(), 0, clock.now()));
@@ -81,6 +92,12 @@ public final class Dispatcher {
         return record.isPresent()
             && record.get().version() == entry.intent().version()
             && record.get().status() == CartStatus.ABANDONED;
+    }
+
+    /** Past its scheduled time plus lateness bound, a reminder is dropped, never sent. The bound itself is on time. */
+    private boolean late(OutboxEntry entry, Instant now) {
+        NotificationIntent intent = entry.intent();
+        return now.isAfter(intent.scheduledFor().plus(config.latenessBounds().get(intent.offsetIndex())));
     }
 
     private void deadLetter(OutboxEntry entry, String reason) {

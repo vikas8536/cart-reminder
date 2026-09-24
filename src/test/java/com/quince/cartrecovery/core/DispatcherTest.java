@@ -148,4 +148,53 @@ class DispatcherTest {
         assertEquals(0, dlq.size());
         assertEquals(1, metrics.get("dispatch.replayed"));
     }
+    @Test
+    void retryLandingAfterTheLatenessBoundIsDroppedNotSent() {
+        dispatcher = new Dispatcher(RecoveryConfig.defaults(), store, outbox, sink, dlq, clock, metrics);
+        sink.scriptOutcomes(SendResult.TRANSIENT_FAILURE, SendResult.TRANSIENT_FAILURE, SendResult.TRANSIENT_FAILURE);
+        outbox.add(new OutboxEntry(intent(0), 0, clock.now()));
+
+        dispatcher.drain();
+        clock.set(at(min(31)));
+        dispatcher.drain();
+        clock.set(at(min(33)));
+        dispatcher.drain();
+        assertEquals(Optional.of(at(min(37))), outbox.nextDueAt());
+        clock.set(at(min(37)));
+        dispatcher.drain();
+
+        assertEquals(0, sink.sent().size());
+        assertEquals(3, sink.attempts());
+        assertEquals(0, outbox.size());
+        assertEquals(0, dlq.size());
+        assertEquals(1, metrics.get("dispatch.skipped_late"));
+    }
+
+    @Test
+    void attemptExactlyAtTheLatenessBoundIsStillSent() {
+        outbox.add(new OutboxEntry(intent(0), 0, clock.now()));
+        clock.set(at(min(35)));
+
+        dispatcher.drain();
+
+        assertEquals(1, sink.sent().size());
+        assertEquals(0, metrics.get("dispatch.skipped_late"));
+    }
+
+    @Test
+    void replayAfterTheLatenessBoundIsDroppedNotSent() {
+        sink.scriptOutcomes(SendResult.PERMANENT_FAILURE);
+        outbox.add(new OutboxEntry(intent(0), 0, clock.now()));
+        dispatcher.drain();
+        clock.set(at(min(36)));
+
+        dispatcher.replayDeadLetters();
+        dispatcher.drain();
+
+        assertEquals(0, sink.sent().size());
+        assertEquals(0, outbox.size());
+        assertEquals(0, dlq.size());
+        assertEquals(1, metrics.get("dispatch.replayed"));
+        assertEquals(1, metrics.get("dispatch.skipped_late"));
+    }
 }
