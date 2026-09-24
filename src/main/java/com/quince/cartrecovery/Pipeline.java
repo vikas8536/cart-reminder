@@ -54,9 +54,13 @@ public final class Pipeline {
         return new Pipeline(config, start, new HashArmAssigner("cart-recovery-v1", config.holdoutPercent()));
     }
 
-    /** Feeds one event through the detector at the current virtual time. */
+    /**
+     * Feeds one event through the detector at its own time: first advances the clock to the event,
+     * firing every timer and retry due before it, then handles the event. An event older than the
+     * clock (a late or duplicate delivery) is handled at the current time without moving the clock.
+     */
     public void ingest(CartEvent event) {
-        clock.set(event.occurredAt());
+        advanceTo(event.occurredAt());
         detector.handle(event);
         dispatcher.drain();
     }

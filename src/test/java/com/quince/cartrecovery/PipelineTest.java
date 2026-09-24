@@ -46,6 +46,17 @@ class PipelineTest {
     }
 
     @Test
+    void ingestFiresTimersDueBeforeTheEvent() {
+        Pipeline p = treatmentPipeline();
+        p.ingest(edited(1, min(0)));
+
+        p.ingest(purchased(2, min(45)));
+        p.advanceTo(at(hrs(48)));
+
+        assertEquals(List.of(at(min(30))), sentTimes(p));
+    }
+
+    @Test
     void restartWhileActiveRebuildsTheCheckTimer() {
         Pipeline p = treatmentPipeline();
         p.ingest(edited(1, min(0)));
