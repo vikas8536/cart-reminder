@@ -42,7 +42,7 @@ Event-driven, with lazily validated timers. A batch scan every minute would be s
 | Timer Sweepers | Pop due timers per shard in bounded batches under a short lease. An expired lease returns the timer, giving at-least-once timer delivery. | Reminder Worker |
 | Reminder Worker | Reloads the record, compares the version tag and expected status, then drops, marks abandoned and schedules, or writes ledger row plus outbox intent in one conditional transaction. | Cart State Store, Timer Store, Send Ledger, Outbox |
 | Dispatcher | Drains the outbox in two priority lanes (production only; the in-memory dispatcher drains in due order), re-validates the cart and the lateness bound, calls the gateway with the idempotency key, retries, dead-letters. | Notification Gateway, Dead Letter Queue |
-| Reconciliation Sweeper | Every few minutes scans open records and reinserts any missing timer, skipping offsets already past their lateness bound. | Cart State Store, Timer Store |
+| Reconciliation Sweeper | Every few minutes reads only carts that still have a next step, from a sparse index of open carts whose last offset has not passed, and reinserts any missing timer, skipping offsets already past their lateness bound. | Cart State Store, Timer Store |
 | Config and Metrics | Window, offsets, lateness bounds, frequency cap, holdout, arms. Counters from every stage. | All |
 
 ```mermaid
@@ -123,7 +123,7 @@ A reopened cart has a new version, so its reminders get new keys and are not con
 | Carts becoming abandoned per second | 350 | 875 |
 | Reminder sends per second | about 1,000 | about 2,600 |
 
-Sixty-four partitions keep each under 200 events per second at spike. Redis and DynamoDB absorb 12.5k writes per second each, which a single Postgres primary would not. The timer set holds about 2 million in-flight carts at spike, roughly 200 MB, sharded 64 ways so sweepers run in parallel. The 24 hour reminders for a spike hour land as a burst a day later, so the dispatcher has a rate limiter and a backlog.
+Sixty-four partitions keep each under 200 events per second at spike. Redis and DynamoDB absorb 12.5k writes per second each, which a single relational primary would handle only with careful tuning. Abandoned carts keep a timer until their 24 hour reminder, so the in-flight timer set is about 350 per second times 86,400 seconds, roughly 30 million members and about 3 GB, or about 50 MB per shard across 64 shards, which is comfortable and lets sweepers run in parallel. The reconciliation sweep reads only carts that still have a next step: a sparse index of open carts whose last offset has not passed, equivalently records moved to a terminal status or given a TTL after their last offset, so the scan stays bounded by the in-flight set rather than every cart ever seen. The 24 hour reminders for a spike hour land as a burst a day later, so the dispatcher has a rate limiter and a backlog.
 
 ## 9. Behaviour under load spikes
 
