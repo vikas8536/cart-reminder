@@ -1,0 +1,58 @@
+package com.quince.cartrecovery.core;
+
+import com.quince.cartrecovery.model.CartRecord;
+import com.quince.cartrecovery.model.RecoveryConfig;
+import com.quince.cartrecovery.model.Timer;
+import com.quince.cartrecovery.ports.CartStateStore;
+import com.quince.cartrecovery.ports.Clock;
+import com.quince.cartrecovery.ports.SendLedger;
+import com.quince.cartrecovery.ports.TimerStore;
+
+/**
+ * Rebuilds the timer index from durable state. The timer store is derived data:
+ * an ACTIVE cart needs its abandonment check, an ABANDONED cart needs the reminder
+ * after the highest offset already in the ledger.
+ */
+public final class Reconciler {
+    private final RecoveryConfig config;
+    private final ReminderPolicy policy;
+    private final CartStateStore store;
+    private final TimerStore timers;
+    private final SendLedger ledger;
+    private final Clock clock;
+    private final Metrics metrics;
+
+    public Reconciler(RecoveryConfig config, CartStateStore store, TimerStore timers,
+                      SendLedger ledger, Clock clock, Metrics metrics) {
+        this.config = config;
+        this.policy = new ReminderPolicy(config);
+        this.store = store;
+        this.timers = timers;
+        this.ledger = ledger;
+        this.clock = clock;
+        this.metrics = metrics;
+    }
+
+    public void rebuildTimers() {
+        for (CartRecord r : store.scanOpen()) {
+            switch (r.status()) {
+                case ACTIVE -> rebuilt(Timer.checkAbandon(
+                    r.cartId(), r.version(), r.lastActivityAt().plus(config.window())));
+                case ABANDONED -> {
+                    if (!policy.eligible(r, clock.now())) continue;
+                    int next = ledger.highestOffsetIndex(r.cartId(), r.version()) + 1;
+                    if (next < config.offsets().size()) {
+                        rebuilt(Timer.reminder(r.cartId(), r.version(), next,
+                            r.lastActivityAt().plus(config.offsets().get(next))));
+                    }
+                }
+                case CLOSED -> { }
+            }
+        }
+    }
+
+    private void rebuilt(Timer timer) {
+        timers.upsert(timer);
+        metrics.increment("reconcile.timers_rebuilt");
+    }
+}
