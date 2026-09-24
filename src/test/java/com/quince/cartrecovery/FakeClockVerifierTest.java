@@ -186,6 +186,25 @@ class FakeClockVerifierTest {
         assertEquals(3, p.ledger().size());
     }
 
+    @Test @DisplayName("10b. restart between abandonment and the first reminder: first reminder rebuilt and fires on time")
+    void restartBetweenAbandonmentAndFirstReminder() {
+        Pipeline p = pipeline(RecoveryConfig.defaults().withWindow(Duration.ofMinutes(20)));
+        p.ingest(edited(1, min(0)));
+        p.advanceTo(at(min(25)));
+
+        assertEquals(CartStatus.ABANDONED, p.store().get(CART).orElseThrow().status());
+        assertEquals(List.of(), sentTimes(p));
+        assertEquals(0, p.ledger().size());
+
+        p.restart();
+        assertEquals(1, p.metrics().get("reconcile.timers_rebuilt"));
+
+        p.advanceTo(at(hrs(48)));
+
+        assertEquals(List.of(at(min(30)), at(hrs(1)), at(hrs(24))), sentTimes(p));
+        assertEquals(List.of("cart-1:1:0","cart-1:1:1","cart-1:1:2"), sentKeys(p));
+    }
+
     @Test @DisplayName("11. timers delivered past the lateness bound are skipped, later offsets still fire")
     void latenessBound() {
         Pipeline p = pipeline();
