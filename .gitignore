@@ -1,7 +1,12 @@
 case_study.pdf
 .gradle/
 build/
+# IntelliJ IDEA
 .idea/
 *.iml
+*.ipr
+*.iws
+out/
+.idea_modules/
 .DS_Store
 ~/
