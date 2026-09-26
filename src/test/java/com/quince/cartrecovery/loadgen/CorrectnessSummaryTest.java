@@ -13,7 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 // Fix round 2: LoadgenRole used to count sent/skippedLate/cancelled/dead over every resolved outcome,
 // including ones on keys Expected never counted. That let a non-expected outcome silently cancel out a
-// real miss in the unexplainedMissing subtraction, making it smaller than missedWhileLagging even though
+// real miss in the unexplainedMissing subtraction, making it smaller than the missing buckets (then "missed while lagging") even though
 // the report claimed the latter "counts in unexplained". These tests pin the fix: outcome counts are
 // restricted to expectedKeys, non-expected outcomes are reported on their own, and the full identity holds.
 class CorrectnessSummaryTest {
@@ -38,15 +38,16 @@ class CorrectnessSummaryTest {
         assertEquals(0, result.sent(), "the stray outcome must not be counted as a real sent key");
         assertEquals(1, result.outcomesOnNonExpectedKeys());
         assertEquals(0, result.supersededBeforeSend());
-        assertEquals(3, result.missedWhileLagging(), "all three expected keys are genuinely missing");
-        assertEquals(3, result.unexplainedMissing(), "unexplainedMissing must equal missedWhileLagging exactly");
+        assertEquals(0, result.supersededAfterSendBy());
+        assertEquals(3, result.neverSupersededNoOutcome(), "all three expected keys are genuinely missing");
+        assertEquals(3, result.unexplainedMissing(), "unexplainedMissing must equal the two missing buckets' sum exactly");
         assertIdentity(expectedKeys.size(), result);
     }
 
     @Test void theBuggyBehaviorWouldHaveMadeUnexplainedSmallerThanMissedWhileLagging() {
         // Same script as above, but demonstrating what fix round 1's LoadgenRole did wrong: counting the
         // stray outcome against the WHOLE resolved map (not restricted to expectedKeys) would have counted
-        // it as "sent", reducing unexplainedMissing below the true missedWhileLagging count.
+        // it as "sent", reducing unexplainedMissing below the true missing-bucket count.
         Cycle cycle = new Cycle(1L, T0, null);
         CartScript script = new CartScript("cart-1", "shopper-1", List.of(cycle));
         List<OutcomeRow> outcomes = List.of(new OutcomeRow("cart-1:1:99", "cart-1", 1, "TREATMENT", "SENT", T0, 1));
@@ -72,7 +73,10 @@ class CorrectnessSummaryTest {
         Cycle missedCycle = new Cycle(1L, T0, null);
         CartScript missedScript = new CartScript("cart-missed", "shopper-missed", List.of(missedCycle));
 
-        List<CartScript> scripts = List.of(sentScript, supersededScript, missedScript);
+        Cycle lateCycle = new Cycle(1L, T0, sendBy.plusSeconds(1));      // resumed only after offset 0's sendBy
+        CartScript lateScript = new CartScript("cart-late", "shopper-late", List.of(lateCycle));
+
+        List<CartScript> scripts = List.of(sentScript, supersededScript, missedScript, lateScript);
         Set<String> expectedKeys = Expected.keys(scripts, CONFIG, ALL_TREATMENT);
 
         List<OutcomeRow> outcomes = List.of(
@@ -86,7 +90,8 @@ class CorrectnessSummaryTest {
         assertEquals(3, result.sent());
         assertEquals(1, result.outcomesOnNonExpectedKeys());
         assertEquals(1, result.supersededBeforeSend());       // cart-superseded's single expected key (offset 0)
-        assertEquals(3, result.missedWhileLagging());          // cart-missed's three offsets
+        assertEquals(1, result.supersededAfterSendBy());      // cart-late's offset 0, resumed after its sendBy
+        assertEquals(3, result.neverSupersededNoOutcome());   // cart-missed's three offsets
         assertIdentity(expectedKeys.size(), result);
     }
 
@@ -94,5 +99,7 @@ class CorrectnessSummaryTest {
         assertEquals(expected,
             r.sent() + r.skippedLate() + r.cancelled() + r.dead() + r.supersededBeforeSend() + r.unexplainedMissing(),
             "expected = sent + skipped + cancelled + dead + superseded-before-send + unexplained");
+        assertEquals(r.unexplainedMissing(), r.supersededAfterSendBy() + r.neverSupersededNoOutcome(),
+            "unexplained = superseded-after-sendBy + never-superseded-no-outcome");
     }
 }

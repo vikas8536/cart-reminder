@@ -28,7 +28,7 @@ class MissingBreakdownTest {
 
         MissingBreakdown.Result result = MissingBreakdown.compute(List.of(script), CONFIG, ALL_TREATMENT, Set.of());
 
-        assertEquals(new MissingBreakdown.Result(0, 0), result);
+        assertEquals(new MissingBreakdown.Result(0, 0, 0), result);
     }
 
     @Test void resumeBetweenDueAndSendByIsSupersededBeforeSend() {
@@ -41,10 +41,11 @@ class MissingBreakdownTest {
 
         MissingBreakdown.Result result = MissingBreakdown.compute(List.of(script), CONFIG, ALL_TREATMENT, Set.of());
 
-        assertEquals(new MissingBreakdown.Result(1, 0), result);
+        assertEquals(new MissingBreakdown.Result(1, 0, 0), result);
     }
 
-    @Test void resumeAfterSendByIsMissedWhileLagging() {
+    // Final review: "missed while lagging" is split into pure lateness and possible silent loss.
+    @Test void resumeAfterSendByIsSupersededAfterSendBy() {
         Instant dueAt = T0.plus(CONFIG.offsets().get(0));
         Instant sendBy = dueAt.plus(CONFIG.latenessBounds().get(0));
         Instant resumeAt = sendBy.plusSeconds(1);   // after the pre-check's own deadline
@@ -53,16 +54,16 @@ class MissingBreakdownTest {
 
         MissingBreakdown.Result result = MissingBreakdown.compute(List.of(script), CONFIG, ALL_TREATMENT, Set.of());
 
-        assertEquals(new MissingBreakdown.Result(0, 1), result);
+        assertEquals(new MissingBreakdown.Result(0, 1, 0), result);   // pure lateness
     }
 
-    @Test void aKeyWithNoSupersedingEventThatNeverGotAnOutcomeIsMissedWhileLagging() {
+    @Test void aKeyWithNoSupersedingEventThatNeverGotAnOutcomeIsNeverSupersededNoOutcome() {
         Cycle cycle = new Cycle(1L, T0, null);   // never resumes or purchases
         CartScript script = new CartScript("cart-1", "shopper-1", List.of(cycle));
 
         MissingBreakdown.Result result = MissingBreakdown.compute(List.of(script), CONFIG, ALL_TREATMENT, Set.of());
 
-        assertEquals(new MissingBreakdown.Result(0, 3), result);   // all three offsets missing, none superseded
+        assertEquals(new MissingBreakdown.Result(0, 0, 3), result);   // possible silent loss: all three offsets, none superseded
     }
 
     @Test void aKeyThatDidGetAnOutcomeIsNotCountedInEitherBucket() {
@@ -72,7 +73,7 @@ class MissingBreakdownTest {
 
         MissingBreakdown.Result result = MissingBreakdown.compute(List.of(script), CONFIG, ALL_TREATMENT, Set.of("cart-1:1:0"));
 
-        assertEquals(new MissingBreakdown.Result(0, 0), result);
+        assertEquals(new MissingBreakdown.Result(0, 0, 0), result);
     }
 
     @Test void holdoutCartsAreNeverCountedInEitherBucket() {
@@ -82,6 +83,6 @@ class MissingBreakdownTest {
 
         MissingBreakdown.Result result = MissingBreakdown.compute(List.of(script), CONFIG, allHoldout, Set.of());
 
-        assertEquals(new MissingBreakdown.Result(0, 0), result);
+        assertEquals(new MissingBreakdown.Result(0, 0, 0), result);
     }
 }

@@ -156,7 +156,8 @@ public final class LoadgenRole implements Role {
             sampler.maxWatermarkLagMillis(), sampler.watermarkEverStale(), sampler.maxPastDueBacklog(),
             latencyByLane,
             expectedKeys.size(), correctness.sent(), correctness.skippedLate(), correctness.cancelled(), correctness.dead(),
-            duplicates, postPurchase, correctness.supersededBeforeSend(), correctness.missedWhileLagging(),
+            duplicates, postPurchase, correctness.supersededBeforeSend(), correctness.supersededAfterSendBy(),
+            correctness.neverSupersededNoOutcome(),
             correctness.outcomesOnNonExpectedKeys(), correctness.unexplainedMissing(), correctness.unexplainedMissingRatio(),
             !finalReadCaughtUp,
             Runtime.getRuntime().availableProcessors(), Runtime.getRuntime().maxMemory());
