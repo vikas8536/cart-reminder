@@ -37,32 +37,35 @@ Event-driven, with lazily validated timers. A batch scan every minute would be s
 |---|---|---|
 | Cart Service (existing) | Publishes `CartEdited`, `CartResumed`, `CartCleared`, `CartPurchased` with cart id, shopper key, version, time, item snapshot | `cart-events` stream, 64 partitions keyed by cart id |
 | Abandonment Detector | Writes the timer first, then a field-scoped conditional update to the cart record; ignores events at or below the stored version; commits the offset after both writes. | Cart State Store, Timer Store |
-| Cart State Store | One record per cart: status, version, last activity, snapshot, arm, sequence starts. Conditional writes on version. | DynamoDB |
-| Timer Store | Due-time index, one timer per cart, upsert replaces. Derived and rebuildable. | Redis sorted set, 64 shards by cart hash |
-| Timer Sweepers | Pop due timers per shard in bounded batches under a short lease. An expired lease returns the timer, giving at-least-once timer delivery. | Reminder Worker |
-| Reminder Worker | Reloads the record, compares the version tag and expected status, then drops, marks abandoned and schedules, or writes ledger row plus outbox intent in one conditional transaction. | Cart State Store, Timer Store, Send Ledger, Outbox |
-| Dispatcher | Drains the outbox in two priority lanes (production only; the in-memory dispatcher drains in due order), re-validates the cart and the lateness bound, calls the gateway with the idempotency key, retries, dead-letters. | Notification Gateway, Dead Letter Queue |
-| Reconciliation Sweeper | Every few minutes reads only carts that still have a next step, from a sparse index of open carts whose last offset has not passed, and reinserts any missing timer, skipping offsets already past their lateness bound. | Cart State Store, Timer Store |
+| Cart State Store | One record per cart: status, version, last activity, snapshot, arm, sequence starts, plus a sparse open-cart index entry while a next step is pending. Field-scoped conditional writes on version. | DynamoDB |
+| Timer Store | Due-time index, one timer per cart, monotonic upsert by `(version, offsetIndex)`. Derived and rebuildable. | Redis sorted set, 64 shards by cart hash |
+| Timer Sweepers | Pop due timers per shard in bounded batches under a short lease. An expired lease returns the timer, giving at-least-once timer delivery. | Reminder Scheduler |
+| Reminder Scheduler | Reloads the record behind a watermark gate, compares the version tag and expected status, then drops, marks abandoned and upserts the next timer, or publishes a reminder intent stamped with a `sendBy` deadline. Writes no ledger row: dedupe is the dispatcher's job. | Cart State Store, Timer Store, Reminder Intents |
+| Dispatcher | Consumes reminder intents (two priority lanes in production, one queue in memory), takes a fenced ledger claim at send time, re-validates the cart and `sendBy` at each checkpoint, checks the `recovery-meta.paused` guardrail switch, calls the gateway with the idempotency key, retries with jitter, dead-letters. | Send Ledger, Cart State Store, Notification Gateway, Dead Letter Queue |
+| Reconciliation Sweeper | Every few minutes reads only carts that still have a next step, from the sparse open-cart index, and reinserts any timer missing from the store, starting after the ledger's highest sent offset and skipping offsets already past their lateness bound. Also detects a Redis restart or failover and replays recent `cart-events` into timer upserts. | Cart State Store, Timer Store, Send Ledger, `cart-events` (failover replay only) |
 | Config and Metrics | Window, offsets, lateness bounds, frequency cap, holdout, arms. Counters from every stage. | All |
 
 ```mermaid
 flowchart LR
   CS[Cart Service] -->|cart-events, keyed by cart id| K[(Kafka)]
   K --> D[Abandonment Detector]
-  D -->|conditional put| S[(Cart State Store<br/>DynamoDB)]
-  D -->|upsert by cart id| T[(Timer Store<br/>Redis ZSET x64)]
+  D -->|timer first| T[(Timer Store<br/>Redis ZSET x64)]
+  D -->|then conditional update| S[(Cart State Store<br/>DynamoDB)]
   T --> SW[Timer Sweepers]
-  SW --> RW[Reminder Worker]
-  RW -->|reload + version compare| S
-  RW -->|next reminder| T
-  RW -->|ledger row + intent, one txn| L[(Send Ledger + Outbox)]
-  L --> DP[Dispatcher]
+  SW --> RS[Reminder Scheduler]
+  RS -->|reload + version compare| S
+  RS -->|next reminder timer| T
+  RS -->|publish, sendBy stamped| I[(Reminder Intents<br/>Kafka fast/slow)]
+  I --> DP[Dispatcher]
+  DP -->|fenced claim, send time| L[(Send Ledger)]
   DP -->|reload| S
   DP -->|idempotency key| G[Notification Gateway]
   DP -->|permanent or exhausted| DLQ[(Dead Letter Queue)]
   DLQ -->|replay, same key| L
   RC[Reconciliation Sweeper] --> S
   RC --> T
+  RC -->|highest sent offset| L
+  K -.->|failover replay, last 60 s| RC
 ```
 
 The timer-before-record order above lives in the shared `AbandonmentDetector`, so in memory writes in the same order too (Section 11): a crash between the two writes leaves at most a stray timer, which the reconciler repairs from the record, while leaving the record first would let a crash hide an abandoned cart until the next sweep finds it by a wider scan. What is production-only is the crash this protects against: `DynamoCartStateStore` and the Redis timer store are two independent stores that can fail between one write and the next, and the field-scoped `UpdateItem`, conditioned on `version <` the incoming event's version and touching only the fields an event actually changes, removes the lost-update race on `sequenceStarts` that a read-then-write update would have. `InMemoryCartStateStore` and the in-memory timer store are two objects in one JVM with no failure between them, so the identical write order carries no crash-safety meaning there; it is simply inherited from the shared detector.
@@ -74,7 +77,7 @@ Statuses `ACTIVE`, `ABANDONED`, `CLOSED`.
 - Edit or resume: `ACTIVE`, version and last activity updated, timer `CHECK_ABANDON` due at last activity plus window, tagged with the version. A closed cart reopens as a new cycle.
 - Purchase or clear: `CLOSED`, version updated, best-effort timer removal.
 - `CHECK_ABANDON` fires: drop if the version differs or status is not `ACTIVE`. Otherwise `ABANDONED`, and unless the arm is holdout or the cap is reached, timer `REMINDER 0` due at last activity plus the first offset.
-- `REMINDER i` fires: drop if the version differs or status is not `ABANDONED`. Skip and count if past the lateness bound. Otherwise write the ledger row and outbox intent. Either way schedule `REMINDER i+1` if one exists.
+- `REMINDER i` fires: drop if the version differs or status is not `ABANDONED`. Otherwise publish a reminder intent stamped with a `sendBy` deadline — the scheduler no longer checks the lateness bound itself, that check moved to the dispatcher (§5). Either way, schedule `REMINDER i+1` if one exists, otherwise end the sequence.
 
 One timer per cart at all times keeps the Redis upsert model simple and bounds the timer set to the number of in-flight carts.
 
