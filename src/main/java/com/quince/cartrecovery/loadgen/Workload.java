@@ -24,7 +24,15 @@ public final class Workload {
     private static final double ABANDON_PROBABILITY = 0.70;
     private static final double RESUME_ONE_PROBABILITY = 0.25;
     private static final double RESUME_TWO_PROBABILITY = 0.05;
-    private static final double APPROX_EVENTS_PER_CART = 9.5;
+    /**
+     * Fix round 1, finding 2: calibrated to the actual generator, not a rough guess (a stale 9.5 undercounted
+     * carts by ~44%, so a "target rate" run only ever produced about 57% of the intended events). Derived
+     * exactly from the probabilities above: E[cycles] = 0.70*1 + 0.25*2 + 0.05*3 = 1.35; edits average
+     * (2+3+4+5)/4 = 3.5 per cycle, so 1.35*3.5 = 4.725 edit events; E[resumes] = E[cycles]-1 = 0.35 resume
+     * events; one purchase event with probability 1-ABANDON_PROBABILITY = 0.30. Total: 4.725+0.35+0.30 = 5.375.
+     * {@link WorkloadTest#averageEventsPerCartMatchesTheCalibratedConstant()} checks the generator against it.
+     */
+    static final double APPROX_EVENTS_PER_CART = 5.375;
 
     public record Result(List<ScriptedEvent> events, List<CartScript> scripts) {}
 

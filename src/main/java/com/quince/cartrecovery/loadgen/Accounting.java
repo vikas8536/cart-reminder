@@ -59,9 +59,17 @@ public final class Accounting {
         return count;
     }
 
-    /** expected - sent - skippedLate - cancelled - dead, per spec §8.5. */
-    public static long unexplainedMissing(long expected, long sent, long skippedLate, long cancelled, long dead) {
-        return expected - sent - skippedLate - cancelled - dead;
+    /**
+     * expected - sent - skippedLate - cancelled - dead - supersededBeforeSend. A deliberate deviation
+     * from spec §8.5's plain formula (controller ruling, E2 fix round 1): a key superseded by a resume
+     * or purchase at or before its own sendBy is a correct non-send with no outcome ever recorded for
+     * it (see {@link MissingBreakdown}), so it is excluded here rather than counted as a failure. A key
+     * superseded only after its sendBy stays inside this total as "missed while lagging" — it should
+     * have gone out, or been explicitly resolved, before the cart moved on, and wasn't.
+     */
+    public static long unexplainedMissing(long expected, long sent, long skippedLate, long cancelled, long dead,
+                                           long supersededBeforeSend) {
+        return expected - sent - skippedLate - cancelled - dead - supersededBeforeSend;
     }
 
     public static double unexplainedMissingRatio(long unexplainedMissing, long expected) {

@@ -138,6 +138,16 @@ final class LagSampler {
         return total;
     }
 
+    /**
+     * Fix round 1, finding 3: an on-demand lag read (bypassing the 5 s schedule) so a bounded drain wait
+     * can poll for "every group caught up" before the spec's fixed drain wait even starts.
+     */
+    Map<String, Long> currentLagByGroup() throws InterruptedException, ExecutionException {
+        Map<String, Long> out = new HashMap<>();
+        for (String group : groups) out.put(group, lagFor(group));
+        return out;
+    }
+
     Map<String, Long> maxLagByGroup() { return Map.copyOf(maxLag); }
     Map<String, Long> endingLagByGroup() { return Map.copyOf(endingLag); }
     long maxWatermarkLagMillis() { return maxWatermarkLagMillis.get(); }

@@ -73,7 +73,12 @@ class AccountingTest {
     }
 
     @Test void unexplainedMissingIsExpectedMinusEveryAccountedOutcome() {
-        assertEquals(2, Accounting.unexplainedMissing(100, 80, 10, 5, 3));
+        assertEquals(2, Accounting.unexplainedMissing(100, 80, 10, 5, 3, 0));
+    }
+
+    // Fix round 1, finding 1: a key superseded before its own sendBy is a correct non-send, not a miss.
+    @Test void unexplainedMissingAlsoExcludesKeysSupersededBeforeSend() {
+        assertEquals(1, Accounting.unexplainedMissing(100, 80, 10, 5, 3, 1));
     }
 
     @Test void unexplainedMissingRatioGuardsAgainstZeroExpected() {

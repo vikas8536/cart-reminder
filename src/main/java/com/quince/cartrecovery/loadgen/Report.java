@@ -21,7 +21,9 @@ public final class Report {
 
         md.append("## Throughput\n\n");
         md.append("- Target rate: ").append(s.targetRatePerSecond()).append(" events/s\n");
-        md.append("- Achieved rate: ").append(s.achievedRatePerSecond()).append(" events/s\n\n");
+        md.append("- Achieved rate: ").append(s.achievedRatePerSecond()).append(" events/s")
+          .append(" (over a ").append(s.publishSpanSeconds()).append(" s actual publish span; nominal DURATION was ")
+          .append(s.nominalDurationSeconds()).append(" s)\n\n");
 
         md.append("## Consumer lag by group\n\n");
         md.append("| Group | Max lag | Ending lag |\n|---|---|---|\n");
@@ -52,6 +54,10 @@ public final class Report {
         md.append("## Correctness at the sink\n\n");
         md.append("- Duplicate sends: **").append(s.duplicateSends()).append("**\n");
         md.append("- Post-purchase sends: **").append(s.postPurchaseSends()).append("**\n");
+        md.append("- Superseded before send (a resume or purchase superseded the cycle at or before that offset's ")
+          .append("sendBy — a correct non-send, excluded from unexplained missing): ").append(s.supersededBeforeSend()).append("\n");
+        md.append("- Missed while lagging (superseded only after sendBy, or never superseded at all — a real ")
+          .append("failure, counted in unexplained missing): ").append(s.missedWhileLagging()).append("\n");
         md.append("- Unexplained missing: ").append(s.unexplainedMissing())
           .append(" (").append(String.format("%.4f", s.unexplainedMissingRatio() * 100)).append("% of expected)\n\n");
 
