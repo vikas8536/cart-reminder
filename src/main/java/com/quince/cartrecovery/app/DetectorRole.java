@@ -35,7 +35,8 @@ public final class DetectorRole implements Role {
             BatchConsumerLoop<byte[]> loop = new BatchConsumerLoop<>(ctx.consumerProps(GROUP),
                 new BatchConsumerLoop.Settings(GROUP, List.of(Topics.CART_EVENTS), 500, Duration.ofMillis(500),
                     config.maxInFlight(), Topics.CART_EVENTS_DLQ),
-                new ByteArrayDeserializer(), record -> handle(detector, record), hooks, ctx.producer(), health, metrics);
+                new ByteArrayDeserializer(), record -> handle(detector, record),
+                RoleContext.withStuckDetection(hooks, health), ctx.producer(), health, metrics);
             RoleContext.runLoops(loop::close, List.of(loop::run));
         }
     }

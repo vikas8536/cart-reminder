@@ -141,6 +141,11 @@ public final class RoleContext implements AutoCloseable {
         throw new IllegalStateException("a role loop ended unexpectedly");
     }
 
+    /** Composes an existing Hooks with a /ready stuck-partition signal (spec §7.4, controller ruling F5b). */
+    public static <V> BatchConsumerLoop.Hooks<V> withStuckDetection(BatchConsumerLoop.Hooks<V> hooks, Health health) {
+        return new StuckPartitionHooks<>(hooks, health, System::nanoTime);
+    }
+
     /** Sleeps; false if interrupted (the interrupt flag is restored). */
     public static boolean sleep(Duration d) {
         try {
