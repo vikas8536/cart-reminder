@@ -28,7 +28,7 @@ Looked up against Maven Central / current release docs on 2026-09-26. All compat
 |---|---|---|
 | `org.apache.kafka:kafka-clients` | `4.3.1` | B3 (producers/consumers), C0b (`BatchConsumerLoop`), D1 |
 | `io.lettuce:lettuce-core` | `6.7.1.RELEASE` | B0, B2 |
-| `software.amazon.awssdk:bom` | `2.54.17` | B1 (manages `dynamodb`, `apache-client` versions) |
+| `software.amazon.awssdk:bom` | `2.54.17` | B1 (manages `dynamodb`, `apache5-client` versions) |
 | `com.fasterxml.jackson:jackson-bom` | `2.19.1` | B3 and anywhere JSON is read/written (manages `jackson-databind`, `jackson-datatype-jsr310`) |
 | `org.testcontainers:testcontainers-bom` | `1.21.4` | B1–B3, C0b, C2 (manages `junit-jupiter`, `kafka` modules) |
 | `org.junit:junit-bom` | `5.10.2` (unchanged — already pinned and green) | everywhere |
@@ -158,7 +158,7 @@ git add build.gradle.kts
 git commit -m "$(cat <<'EOF'
 Pin infra dependency versions and wire an integrationTest source set
 
-kafka-clients, lettuce, the AWS SDK v2 BOM (dynamodb, apache-client),
+kafka-clients, lettuce, the AWS SDK v2 BOM (dynamodb, apache5-client),
 the Jackson BOM, and the Testcontainers BOM (junit-jupiter, kafka) are
 now pinned at current stable versions. integrationTest compiles and
 runs against main and test output so later threads can subclass the
