@@ -30,7 +30,7 @@ B1, B2 and B3 run in parallel in wave W2 and touch disjoint files. No task in th
 
 ## Dependencies (from T0)
 
-T0's pinned set applies (controller ruling R2): `kafka-clients` 4.3.1, `lettuce-core` 6.7.1.RELEASE, AWS SDK v2 BOM 2.54.17 (`dynamodb`, `apache-client`), Jackson BOM 2.19.1 (`jackson-databind`; wire records carry epoch millis as `long`, so `jackson-datatype-jsr310` is not needed here), Testcontainers BOM 1.21.2 (`junit-jupiter`, `kafka`, which bring in `testcontainers`), JUnit BOM 5.10.2. Container images (master Global Constraints): `redis:7.4-alpine`, `amazon/dynamodb-local:3.3.1`, `apache/kafka:4.3.1`.
+T0's pinned set applies (controller ruling R2): `kafka-clients` 4.3.1, `lettuce-core` 6.7.1.RELEASE, AWS SDK v2 BOM 2.54.17 (`dynamodb`, `apache-client`), Jackson BOM 2.19.1 (`jackson-databind`; wire records carry epoch millis as `long`, so `jackson-datatype-jsr310` is not needed here), Testcontainers BOM 1.21.4 (`junit-jupiter`, `kafka`, which bring in `testcontainers`), JUnit BOM 5.10.2. Container images (master Global Constraints): `redis:7.4-alpine`, `amazon/dynamodb-local:3.3.1`, `apache/kafka:4.3.1`.
 
 T0's `integrationTest` source set sees `main` output (including `src/main/resources/redis/*.lua`) and `test` output (thread A's contract classes), runs JUnit 5 test classes sequentially in one JVM (tests share containers and some call `FLUSHALL`), and `check` depends on it.
 

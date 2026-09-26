@@ -30,7 +30,7 @@ Looked up against Maven Central / current release docs on 2026-09-26. All compat
 | `io.lettuce:lettuce-core` | `6.7.1.RELEASE` | B0, B2 |
 | `software.amazon.awssdk:bom` | `2.54.17` | B1 (manages `dynamodb`, `apache-client` versions) |
 | `com.fasterxml.jackson:jackson-bom` | `2.19.1` | B3 and anywhere JSON is read/written (manages `jackson-databind`, `jackson-datatype-jsr310`) |
-| `org.testcontainers:testcontainers-bom` | `1.21.2` | B1–B3, C0b, C2 (manages `junit-jupiter`, `kafka` modules) |
+| `org.testcontainers:testcontainers-bom` | `1.21.4` | B1–B3, C0b, C2 (manages `junit-jupiter`, `kafka` modules) |
 | `org.junit:junit-bom` | `5.10.2` (unchanged — already pinned and green) | everywhere |
 | `org.slf4j:slf4j-simple` | `2.0.16` | runtime-only, binds `kafka-clients`'/Lettuce's slf4j-api calls so logs are visible instead of "no provider" warnings |
 
@@ -99,7 +99,7 @@ dependencies {
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 
-    "integrationTestImplementation"(platform("org.testcontainers:testcontainers-bom:1.21.2"))
+    "integrationTestImplementation"(platform("org.testcontainers:testcontainers-bom:1.21.4"))
     "integrationTestImplementation"("org.testcontainers:junit-jupiter")
     "integrationTestImplementation"("org.testcontainers:kafka")
 }
