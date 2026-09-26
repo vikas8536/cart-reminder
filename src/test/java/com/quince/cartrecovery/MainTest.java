@@ -7,6 +7,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.quince.cartrecovery.app.Health;
 import com.quince.cartrecovery.app.HealthServer;
+import com.quince.cartrecovery.app.InfraConfig;
+import com.quince.cartrecovery.app.Role;
 import com.quince.cartrecovery.app.RoleRegistry;
 import com.quince.cartrecovery.core.Metrics;
 import java.io.ByteArrayOutputStream;
@@ -87,5 +89,40 @@ class MainTest {
         for (String name : RoleRegistry.NAMES) {
             assertEquals(name, RoleRegistry.create(name).orElseThrow().name());
         }
+    }
+
+    @Test
+    void startupLogsTheLiteralConfigHash() throws Exception {
+        int port;
+        try (ServerSocket s = new ServerSocket(0)) { port = s.getLocalPort(); }
+        InfraConfig config = InfraConfig.fromEnv(Map.of("HEALTH_PORT", Integer.toString(port)));
+        assertEquals(0, Main.runRole(new NoopRole(), config));
+        assertTrue(out.toString(UTF_8).contains("config hash " + config.hash()), out.toString(UTF_8));
+    }
+
+    /**
+     * Fix round 1, review finding: ReplayRole drives KafkaConsumer.poll directly on the role thread. Kafka wraps
+     * an interrupted blocking call in its own unchecked org.apache.kafka.common.errors.InterruptException
+     * (cause: the original InterruptedException, and it re-sets the thread's interrupt flag), not the raw
+     * InterruptedException. A role that propagates this must still return cleanly, per the Role contract.
+     */
+    @Test
+    void aKafkaInterruptExceptionDuringShutdownReturnsCleanlyLikeAnInterruptedException() throws Exception {
+        int port;
+        try (ServerSocket s = new ServerSocket(0)) { port = s.getLocalPort(); }
+        InfraConfig config = InfraConfig.fromEnv(Map.of("HEALTH_PORT", Integer.toString(port)));
+        Role role = new Role() {
+            @Override public String name() { return "fake-kafka-interrupt"; }
+            @Override public void run(InfraConfig c, Health health, Metrics metrics) {
+                throw new org.apache.kafka.common.errors.InterruptException(new InterruptedException());
+            }
+        };
+        assertEquals(0, Main.runRole(role, config));
+        assertTrue(err.toString(UTF_8).isBlank(), err.toString(UTF_8));
+    }
+
+    private static final class NoopRole implements Role {
+        @Override public String name() { return "noop"; }
+        @Override public void run(InfraConfig config, Health health, Metrics metrics) {}
     }
 }

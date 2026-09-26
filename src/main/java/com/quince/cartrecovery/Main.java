@@ -75,8 +75,8 @@ public final class Main {
     }
 
     /** SIGTERM runs the shutdown hook, which interrupts this thread and waits up to 30 s for the role to return (master §1.5). */
-    private static int runRole(Role role, InfraConfig config) {
-        System.out.printf("role=%s config=%s%n", role.name(), config.hash());
+    static int runRole(Role role, InfraConfig config) {
+        System.out.printf("role=%s config hash %s%n", role.name(), config.hash());
         Health health = new Health();
         Metrics metrics = new Metrics();
         Thread roleThread = Thread.currentThread();
@@ -93,15 +93,29 @@ public final class Main {
         try (HealthServer server = new HealthServer(config.healthPort(), health, metrics, MAX_SILENCE)) {
             role.run(config, health, metrics);
             return 0;
-        } catch (InterruptedException e) {
-            return 0;
         } catch (Exception e) {
+            if (isInterruption(e)) return 0;   // a clean SIGTERM: the Role contract says run() returns, never throws
             e.printStackTrace();
             return 1;
         } finally {
             done.countDown();
             metricsLogger.interrupt();
         }
+    }
+
+    /**
+     * True for a direct {@link InterruptedException}, for any exception thrown while this thread's interrupt
+     * flag is set, or for one whose cause chain contains an {@link InterruptedException} (fix round 1, review
+     * finding: a role that drives a blocking client directly on the role thread, such as {@code ReplayRole}'s
+     * {@code KafkaConsumer.poll}, can see that client's own unchecked wrapper — e.g. Kafka's
+     * {@code org.apache.kafka.common.errors.InterruptException} — instead of the raw {@code InterruptedException}).
+     */
+    private static boolean isInterruption(Throwable e) {
+        if (Thread.currentThread().isInterrupted()) return true;
+        for (Throwable t = e; t != null; t = t.getCause()) {
+            if (t instanceof InterruptedException) return true;
+        }
+        return false;
     }
 
     /** Logs metrics.snapshot() every METRICS_LOG_INTERVAL until the role finishes (spec §7.4(a), controller ruling F5). */

@@ -37,7 +37,8 @@ class DispatcherRoleIT {
     /**
      * The detector reads Redis time T before a poll and publishes it after the poll returns, so an idle
      * partition's watermark trails Redis time by one idle poll (500 ms) plus overhead: measured 520 to 1010 ms.
-     * RoleInfra's demo CLOCK_SKEW of 0.5 s sits below that floor and the dispatcher gate would never open.
+     * RoleInfra's demo CLOCK_SKEW default is PT2S, at or above that floor; this override keeps the value
+     * pinned here regardless of any future change to the shared default.
      */
     static InfraConfig config() {
         return RoleInfra.config(Map.of("CLOCK_SKEW", "PT2S"));
