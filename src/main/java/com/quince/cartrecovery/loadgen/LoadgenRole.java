@@ -35,6 +35,7 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.IntStream;
@@ -88,6 +89,7 @@ public final class LoadgenRole implements Role {
                     config.recovery().offsets(), config.dispatch().fastOffsets());
 
                 AtomicReference<Instant> publishFinished = new AtomicReference<>();
+                AtomicBoolean finalReadCaughtUp = new AtomicBoolean(true);
                 try {
                     publishAndDrain(sampler, collector, () -> {
                         try (Producer<String, byte[]> producer = buildProducer(config.kafkaBootstrap())) {
@@ -109,8 +111,8 @@ public final class LoadgenRole implements Role {
                         // end offsets while its poll thread is still running — publishAndDrain's finally stops
                         // it as soon as this body returns, so this must happen before that, not after.
                         health.setReady("loadgen.phase", "final-read");
-                        waitForCollectorCaughtUp(collector, config.kafkaBootstrap(), config.partitions(),
-                            FINAL_READ_TIMEOUT, health);
+                        finalReadCaughtUp.set(waitForCollectorCaughtUp(collector, config.kafkaBootstrap(),
+                            config.partitions(), FINAL_READ_TIMEOUT, health));
                         return null;
                     });
                 } catch (InterruptedException e) {
@@ -119,7 +121,7 @@ public final class LoadgenRole implements Role {
                 }
 
                 writeReport(config, health, runPrefix, rate, duration, testStart, publishFinished.get(), workload,
-                    expectedKeys, assigner, purchaseAtByCart, sampler, collector);
+                    expectedKeys, assigner, purchaseAtByCart, sampler, collector, finalReadCaughtUp.get());
             }
         } finally {
             redisClient.shutdown();
@@ -129,21 +131,16 @@ public final class LoadgenRole implements Role {
     private static void writeReport(InfraConfig config, Health health, String runPrefix, double rate, Duration nominalDuration,
                               Instant testStart, Instant publishFinished, Workload.Result workload, Set<String> expectedKeys,
                               ArmAssigner assigner, Map<String, Instant> purchaseAtByCart, LagSampler sampler,
-                              OutcomeCollector collector) {
+                              OutcomeCollector collector, boolean finalReadCaughtUp) {
         List<SinkSend> sends = collector.sinkSends();
         List<OutcomeRow> outcomes = collector.outcomes();
 
-        Map<String, String> resolved = Accounting.resolveOutcomes(outcomes);
-        long sent = Accounting.countByKind(resolved, "SENT");
-        long skippedLate = Accounting.countByKind(resolved, "SKIPPED_LATE");
-        long cancelled = Accounting.countByKind(resolved, "CANCELLED");
-        long dead = Accounting.countByKind(resolved, "DEAD");
         long duplicates = Accounting.duplicateSends(sends);
         long postPurchase = Accounting.postPurchaseSends(sends, purchaseAtByCart, config.dispatch().clockSkew());
-        MissingBreakdown.Result missing = MissingBreakdown.compute(workload.scripts(), config.recovery(), assigner, resolved.keySet());
-        long unexplainedMissing = Accounting.unexplainedMissing(expectedKeys.size(), sent, skippedLate, cancelled, dead,
-            missing.supersededBeforeSend());
-        double ratio = Accounting.unexplainedMissingRatio(unexplainedMissing, expectedKeys.size());
+        // Fix round 2: sent/skippedLate/cancelled/dead are restricted to expectedKeys inside here, so an
+        // outcome on a non-expected key can't silently cancel out a real miss (see CorrectnessSummary).
+        CorrectnessSummary.Result correctness = CorrectnessSummary.compute(expectedKeys, outcomes, workload.scripts(),
+            config.recovery(), assigner);
 
         Map<String, Percentiles.Result> latencyByLane = Map.of(
             "fast", Percentiles.compute(collector.fastLatencies(), testStart, Duration.ofSeconds(30)),
@@ -157,11 +154,12 @@ public final class LoadgenRole implements Role {
             runPrefix, testStart, finished, rate, achievedRate,
             nominalDuration.toSeconds(), publishSpanSeconds,
             sampler.maxLagByGroup(), sampler.endingLagByGroup(), sampler.bottleneckStage(),
-            sampler.maxWatermarkLagMillis(), sampler.maxPastDueBacklog(),
+            sampler.maxWatermarkLagMillis(), sampler.watermarkEverStale(), sampler.maxPastDueBacklog(),
             latencyByLane,
-            expectedKeys.size(), sent, skippedLate, cancelled, dead,
-            duplicates, postPurchase, missing.supersededBeforeSend(), missing.missedWhileLagging(),
-            unexplainedMissing, ratio,
+            expectedKeys.size(), correctness.sent(), correctness.skippedLate(), correctness.cancelled(), correctness.dead(),
+            duplicates, postPurchase, correctness.supersededBeforeSend(), correctness.missedWhileLagging(),
+            correctness.outcomesOnNonExpectedKeys(), correctness.unexplainedMissing(), correctness.unexplainedMissingRatio(),
+            !finalReadCaughtUp,
             Runtime.getRuntime().availableProcessors(), Runtime.getRuntime().maxMemory());
 
         java.nio.file.Path written = Report.write(summary, java.nio.file.Path.of("build/reports/load"));
@@ -215,11 +213,12 @@ public final class LoadgenRole implements Role {
      * Fix round 1, finding 3: after the drain waits, make sure {@code collector} has actually consumed
      * sink-sends and reminder-outcomes up to the end offsets they had at this moment, so a last-instant
      * race between the collector's poll loop and this read never clips the count. Bounded; if the
-     * collector cannot catch up within {@code timeout} (a stuck broker, say) this logs a warning and lets
-     * the caller compute results from whatever the collector has, rather than hanging indefinitely.
+     * collector cannot catch up within {@code timeout} (a stuck broker, say) this logs a warning, returns
+     * {@code false} (fix round 2: so the caller can flag it in the report instead of silently reporting a
+     * possibly-incomplete count as final), and lets the caller compute results from whatever it has.
      */
-    static void waitForCollectorCaughtUp(OutcomeCollector collector, String bootstrap, int partitions,
-                                         Duration timeout, Health health) throws InterruptedException {
+    static boolean waitForCollectorCaughtUp(OutcomeCollector collector, String bootstrap, int partitions,
+                                            Duration timeout, Health health) throws InterruptedException {
         Map<TopicPartition, Long> targets;
         Properties props = new Properties();
         props.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrap);
@@ -233,7 +232,7 @@ public final class LoadgenRole implements Role {
             for (TopicPartition tp : specs.keySet()) targets.put(tp, ends.partitionResult(tp).get().offset());
         } catch (Exception e) {
             System.err.println("loadgen: could not fetch end offsets for the final read: " + e.getMessage());
-            return;
+            return false;
         }
 
         long deadline = System.nanoTime() + timeout.toNanos();
@@ -241,10 +240,10 @@ public final class LoadgenRole implements Role {
             Map<TopicPartition, Long> positions = collector.positions();
             boolean caughtUp = targets.entrySet().stream()
                 .allMatch(e -> e.getValue() == 0 || positions.getOrDefault(e.getKey(), 0L) >= e.getValue());
-            if (caughtUp) return;
+            if (caughtUp) return true;
             if (System.nanoTime() >= deadline) {
                 System.err.println("loadgen: final read did not catch up to end offsets within " + timeout);
-                return;
+                return false;
             }
             health.beat("loadgen");
             Thread.sleep(500);

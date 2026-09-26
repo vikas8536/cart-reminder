@@ -5,6 +5,7 @@ import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Resolves observed {@code sink-sends} and {@code reminder-outcomes} rows into the correctness
@@ -36,6 +37,21 @@ public final class Accounting {
 
     public static long countByKind(Map<String, String> resolved, String kind) {
         return resolved.values().stream().filter(kind::equals).count();
+    }
+
+    /**
+     * Fix round 2: restricts a resolved-outcomes map to only the keys in {@code keys} (typically
+     * {@code Expected.keys(...)}). An outcome on a key that isn't expected — a real-vs-nominal timing
+     * edge at a cycle boundary, say — must never be counted alongside sent/skippedLate/cancelled/dead,
+     * or it silently cancels out a real miss elsewhere in {@link #unexplainedMissing}'s subtraction
+     * without ever being visible in the report.
+     */
+    public static Map<String, String> restrictToKeys(Map<String, String> resolved, Set<String> keys) {
+        Map<String, String> restricted = new HashMap<>();
+        for (Map.Entry<String, String> e : resolved.entrySet()) {
+            if (keys.contains(e.getKey())) restricted.put(e.getKey(), e.getValue());
+        }
+        return restricted;
     }
 
     /** Sends beyond the first per key: a healthy pipeline has zero. */

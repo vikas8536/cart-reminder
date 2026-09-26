@@ -19,6 +19,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -40,6 +41,9 @@ final class LagSampler {
     private final Map<String, Long> maxLag = new HashMap<>();
     private final Map<String, Long> endingLag = new HashMap<>();
     private final AtomicLong maxWatermarkLagMillis = new AtomicLong();
+    /** Fix round 2: a partition whose watermark reads back as {@code Instant.EPOCH} (never published, or
+     * stale) is never fed into the ms figure above — a huge epoch-derived number is not a lag duration. */
+    private final AtomicBoolean watermarkEverStale = new AtomicBoolean();
     private final AtomicLong maxPastDueBacklog = new AtomicLong();
     private final ScheduledExecutorService scheduler = new ScheduledThreadPoolExecutor(1);
 
@@ -84,15 +88,16 @@ final class LagSampler {
                 lagNow.put(group, lag);
             }
 
-            long watermarkLagMs = sampleWatermarkLagMillis();
-            maxWatermarkLagMillis.accumulateAndGet(watermarkLagMs, Math::max);
+            WatermarkSample wm = sampleWatermark();
+            maxWatermarkLagMillis.accumulateAndGet(wm.lagMillis(), Math::max);
+            if (wm.anyStale()) watermarkEverStale.set(true);
 
             long backlog = timerStore.pastDue();
             maxPastDueBacklog.accumulateAndGet(backlog, Math::max);
 
             System.out.printf(
-                "[loadgen sample] producedRate=%.1f/s consumerLag=%s watermarkLagMs=%d timerBacklogPastDue=%d%n",
-                producedRate, lagNow, watermarkLagMs, backlog);
+                "[loadgen sample] producedRate=%.1f/s consumerLag=%s watermarkLag=%s timerBacklogPastDue=%d%n",
+                producedRate, lagNow, wm.anyStale() ? "stale" : wm.lagMillis() + "ms", backlog);
             health.beat("loadgen.sampler");
         } catch (Exception e) {
             System.err.println("sample failed: " + e.getMessage());
@@ -110,14 +115,27 @@ final class LagSampler {
         return rate;
     }
 
-    /** Redis TIME minus the oldest per-partition watermark: how far behind the furthest partition is. */
-    private long sampleWatermarkLagMillis() {
+    record WatermarkSample(long lagMillis, boolean anyStale) {}
+
+    /**
+     * Redis TIME minus the oldest per-partition watermark: how far behind the furthest partition is.
+     * Fix round 2: a partition that reads back {@code Instant.EPOCH} (never published, or stale per the
+     * Watermark contract) is never-published, not "lagging by the current epoch" — it is excluded from
+     * the ms figure and flagged separately instead of producing a meaningless multi-trillion-ms max.
+     */
+    private WatermarkSample sampleWatermark() {
         Instant now = watermark.now();
         long max = 0;
+        boolean anyStale = false;
         for (int p = 0; p < partitions; p++) {
-            max = Math.max(max, Duration.between(watermark.current(p), now).toMillis());
+            Instant current = watermark.current(p);
+            if (current.equals(Instant.EPOCH)) {
+                anyStale = true;
+                continue;
+            }
+            max = Math.max(max, Duration.between(current, now).toMillis());
         }
-        return max;
+        return new WatermarkSample(max, anyStale);
     }
 
     private long lagFor(String group) throws InterruptedException, ExecutionException {
@@ -151,6 +169,7 @@ final class LagSampler {
     Map<String, Long> maxLagByGroup() { return Map.copyOf(maxLag); }
     Map<String, Long> endingLagByGroup() { return Map.copyOf(endingLag); }
     long maxWatermarkLagMillis() { return maxWatermarkLagMillis.get(); }
+    boolean watermarkEverStale() { return watermarkEverStale.get(); }
     long maxPastDueBacklog() { return maxPastDueBacklog.get(); }
 
     /** The group with the largest observed max lag, or "none" if every group stayed caught up. */

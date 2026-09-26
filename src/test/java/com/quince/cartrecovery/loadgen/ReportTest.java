@@ -14,6 +14,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ReportTest {
     private static LoadTestSummary sample() {
+        return sample(false, false);
+    }
+
+    private static LoadTestSummary sample(boolean watermarkEverStale, boolean finalReadTimedOut) {
         return new LoadTestSummary(
             "run-abc123",
             Instant.parse("2026-09-26T10:00:00Z"),
@@ -23,13 +27,15 @@ class ReportTest {
             Map.of("detector", 12000L, "dispatcher-fast", 300L),
             Map.of("detector", 0L, "dispatcher-fast", 0L),
             "detector",
-            420, 7,
+            420, watermarkEverStale, 7,
             Map.of("fast", new Percentiles.Result(800, 1500, 2200, 4000),
                    "slow", new Percentiles.Result(900, 1600, 2400, 500)),
-            10000, 9990, 5, 3, 2,
+            10000, 9985, 5, 3, 2,
             0, 0,
             4, 1,
-            0, 0.0,
+            6,
+            1, 0.0001,
+            finalReadTimedOut,
             8, 16L * 1024 * 1024 * 1024);
     }
 
@@ -49,11 +55,28 @@ class ReportTest {
         assertTrue(md.contains("Post-purchase sends: **0**"));
         assertTrue(md.contains("Superseded before send"));
         assertTrue(md.contains("Missed while lagging"));
-        assertTrue(md.contains("Unexplained missing: 0"));
+        assertTrue(md.contains("Outcomes on non-expected keys"));
+        assertTrue(md.contains("): 6\n"), "outcomesOnNonExpectedKeys value must render");
+        assertTrue(md.contains("Unexplained missing: 1"));
         assertTrue(md.contains("305 s actual publish span"));
         assertTrue(md.contains("nominal DURATION was 300 s"));
         assertTrue(md.contains("Cores: 8"));
         assertTrue(md.contains("shares this machine"));
+        assertTrue(md.contains("loadgen JVM's own max heap"));
+    }
+
+    // Fix round 2: an EPOCH watermark read must render as "stale", never as a huge epoch-derived ms figure.
+    @Test void aStaleWatermarkRendersAsStaleNotAsAMeaninglessMsFigure() {
+        String md = Report.render(sample(true, false));
+
+        assertTrue(md.contains("stale"), "a stale watermark read must say so, not just show a raw ms number");
+    }
+
+    // Fix round 2: a timed-out final read must be flagged in the report, not silently reported as final.
+    @Test void aTimedOutFinalReadIsFlaggedInTheReport() {
+        String md = Report.render(sample(false, true));
+
+        assertTrue(md.contains("did not reach sink-sends'/reminder-outcomes' end offsets in time"));
     }
 
     @Test void writeCreatesATimestampedMarkdownFileUnderTheReportsDir(@TempDir Path tempDir) throws IOException {
