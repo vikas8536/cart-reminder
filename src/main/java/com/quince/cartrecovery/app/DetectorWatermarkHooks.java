@@ -18,7 +18,9 @@ import org.apache.kafka.common.TopicPartition;
  * Spec §5.4 watermark writes. beforePoll: at most every 250 ms, read Redis TIME as T and then the end
  * offsets E of the assigned partitions (a failed call takes no snapshot). afterCommit, every iteration
  * including empty polls and backoff: for each assigned partition publish T of the newest snapshot whose
- * E[p] is at or below the committed position; write nothing when none is satisfied. Poll thread only.
+ * E[p] is at or below the committed position; write nothing when none is satisfied.
+ * Snapshots older than KEEP x 250 ms (2 s) do not count, so a detector cut off from the broker stops writing
+ * and its entries go stale (spec §5.4); the ring is not cleared on a failure, since behind partitions need it. Poll thread only.
  */
 final class DetectorWatermarkHooks implements BatchConsumerLoop.Hooks<byte[]> {
     static final Duration SNAPSHOT_INTERVAL = Duration.ofMillis(250);
@@ -29,7 +31,7 @@ final class DetectorWatermarkHooks implements BatchConsumerLoop.Hooks<byte[]> {
     private final Health health;
     private final Metrics metrics;
     private final LongSupplier nanoTime;
-    private final WatermarkSnapshots snapshots = new WatermarkSnapshots(KEEP);
+    private final WatermarkSnapshots snapshots = new WatermarkSnapshots(KEEP, SNAPSHOT_INTERVAL.multipliedBy(KEEP));
     private final Map<TopicPartition, Long> committed = new HashMap<>();
     private boolean attempted;
     private long lastAttemptNanos;
@@ -52,7 +54,7 @@ final class DetectorWatermarkHooks implements BatchConsumerLoop.Hooks<byte[]> {
         lastAttemptNanos = now;
         try {
             Instant t = watermark.now();   // T before E: every record appended before T lies below E
-            snapshots.add(t, consumer.endOffsets(assigned, BROKER_TIMEOUT));
+            snapshots.add(t, consumer.endOffsets(assigned, BROKER_TIMEOUT), now);
         } catch (RuntimeException e) {
             metrics.increment("watermark.snapshot_failed");   // no snapshot; older ones stay valid
         }
@@ -61,13 +63,14 @@ final class DetectorWatermarkHooks implements BatchConsumerLoop.Hooks<byte[]> {
     @Override
     public void afterCommit(Consumer<String, byte[]> consumer, Map<TopicPartition, Long> committedNow, int generation) {
         Set<TopicPartition> assigned = consumer.assignment();
+        long nowNanos = nanoTime.getAsLong();
         committedNow.forEach((p, offset) -> {
             if (assigned.contains(p)) committed.merge(p, offset, Math::max);
         });
         for (TopicPartition p : assigned) {
             Long position = committed.get(p);
             if (position == null) continue;
-            Optional<Instant> t = snapshots.satisfied(p, position);
+            Optional<Instant> t = snapshots.satisfied(p, position, nowNanos);
             if (t.isEmpty()) continue;   // nothing satisfied: write nothing, the entry goes stale after 5 s
             try {
                 watermark.publish(p.partition(), generation, t.get());

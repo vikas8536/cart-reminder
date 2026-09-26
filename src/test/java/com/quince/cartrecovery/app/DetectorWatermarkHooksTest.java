@@ -80,6 +80,36 @@ class DetectorWatermarkHooksTest {
     }
 
     @Test
+    void brokerCutOffStopsWritingOnceEverySnapshotIsOlderThan2s() {
+        broker.assignment = Set.of(P0);
+        broker.ends.put(P0, 5L);
+        broker.committed.put(P0, 5L);
+        hooks.beforePoll(broker.proxy());                  // (T1, 5) at 0 s
+        broker.endOffsetsFailure = new TimeoutException("broker unreachable");
+        for (int i = 0; i < 12; i++) {                     // 3 s of failing snapshots, 250 ms apart
+            nanos[0] += Duration.ofMillis(250).toNanos();
+            hooks.beforePoll(broker.proxy());
+        }
+        hooks.afterCommit(broker.proxy(), Map.of(), 1);
+        assertEquals(List.of(), watermark.published);
+        assertEquals(12, metrics.get("watermark.snapshot_failed"));
+    }
+
+    @Test
+    void behindPartitionIsSatisfiedByAnOlderSnapshotWithin2s() {
+        broker.assignment = Set.of(P0);
+        broker.committed.put(P0, 0L);
+        broker.ends.put(P0, 5L);
+        hooks.beforePoll(broker.proxy());                  // (T1, 5) at 0 s
+        nanos[0] += Duration.ofMillis(1500).toNanos();
+        watermark.now = T2;
+        broker.ends.put(P0, 10L);
+        hooks.beforePoll(broker.proxy());                  // (T2, 10) at 1.5 s
+        hooks.afterCommit(broker.proxy(), Map.of(P0, 7L), 1);
+        assertEquals(List.of("0|1|" + T1), watermark.published);
+    }
+
+    @Test
     void snapshotsAtMostEvery250ms() {
         broker.assignment = Set.of(P0);
         broker.committed.put(P0, 0L);
