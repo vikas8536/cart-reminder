@@ -152,12 +152,18 @@ public final class RoleContext implements AutoCloseable {
         }
     }
 
+    /** Clears the thread's interrupt (SIGTERM) while closing so the producer flushes and joins cleanly, then restores it. */
     @Override
     public void close() {
-        producer.close(Duration.ofSeconds(5));
-        admin.close(Duration.ofSeconds(5));
-        redis.close();
-        redisClient.shutdown();
-        dynamo.close();
+        boolean interrupted = Thread.interrupted();
+        try {
+            producer.close(Duration.ofSeconds(5));
+            admin.close(Duration.ofSeconds(5));
+            redis.close();
+            redisClient.shutdown();
+            dynamo.close();
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt();
+        }
     }
 }
