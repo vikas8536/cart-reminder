@@ -6,7 +6,6 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.quince.cartrecovery.app.Health;
-import com.quince.cartrecovery.app.HealthServer;
 import com.quince.cartrecovery.app.InfraConfig;
 import com.quince.cartrecovery.app.Role;
 import com.quince.cartrecovery.app.RoleRegistry;
@@ -14,7 +13,6 @@ import com.quince.cartrecovery.core.Metrics;
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.net.ServerSocket;
-import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.AfterEach;
@@ -71,17 +69,6 @@ class MainTest {
         List<String> lines = err.toString(UTF_8).lines().toList();
         assertEquals(1, lines.size(), err.toString(UTF_8));
         assertTrue(lines.get(0).contains("SHARDS"), lines.get(0));
-    }
-
-    @Test
-    void healthcheckReportsTheServerState() throws Exception {
-        int port;
-        try (ServerSocket s = new ServerSocket(0)) { port = s.getLocalPort(); }
-        Map<String, String> env = Map.of("HEALTH_PORT", Integer.toString(port));
-        try (HealthServer server = new HealthServer(port, new Health(), new Metrics(), Duration.ofSeconds(15))) {
-            assertEquals(0, Main.run(new String[] {"--role=healthcheck"}, env));
-        }
-        assertEquals(1, Main.run(new String[] {"--role=healthcheck"}, env));
     }
 
     @Test

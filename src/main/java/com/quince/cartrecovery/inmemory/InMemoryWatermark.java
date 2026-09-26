@@ -26,7 +26,7 @@ public final class InMemoryWatermark implements Watermark {
 
     @Override public synchronized void publish(int partition, long generation, Instant eventTime) {
         Entry stored = entries.get(partition);
-        if (stored != null && generation < stored.generation()) return;
+        if (stored != null && generation < stored.generation() && !isStale(stored)) return;
         Instant time = stored != null && generation == stored.generation() && stored.eventTime().isAfter(eventTime)
             ? stored.eventTime() : eventTime;
         entries.put(partition, new Entry(generation, time, clock.now()));
@@ -52,9 +52,11 @@ public final class InMemoryWatermark implements Watermark {
         Instant pinned = lagging.get(partition);
         if (pinned != null) return pinned;
         Entry e = entries.get(partition);
-        if (e == null || Duration.between(e.updatedAt(), clock.now()).compareTo(STALE_AFTER) > 0) return Instant.EPOCH;
+        if (e == null || isStale(e)) return Instant.EPOCH;
         return e.eventTime();
     }
+
+    private boolean isStale(Entry e) { return Duration.between(e.updatedAt(), clock.now()).compareTo(STALE_AFTER) > 0; }
 
     private Set<Integer> allPartitions() {
         Set<Integer> all = new HashSet<>(entries.keySet());

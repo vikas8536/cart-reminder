@@ -121,10 +121,8 @@ class EndToEndIT {
         String prefix = RoleInfra.prefix("e2e4");
         InfraConfig c = RoleInfra.config(Map.of());
         start(new DetectorRole(), c);
-        start(new SchedulerRole(), c);
-        start(new SchedulerRole(), c);
-        start(new DispatcherRole(), c);
-        start(new DispatcherRole(), c);
+        List<RoleThread> schedulers = List.of(start(new SchedulerRole(), c), start(new SchedulerRole(), c));
+        List<RoleThread> dispatchers = List.of(start(new DispatcherRole(), c), start(new DispatcherRole(), c));
         Set<String> expected = new HashSet<>();
         Instant t0 = Instant.now();
         for (int i = 0; i < 200; i++) {
@@ -136,6 +134,9 @@ class EndToEndIT {
         List<String> keys = sentKeys(prefix);
         assertEquals(600, keys.size(), "one send per key");
         assertEquals(expected, new HashSet<>(keys));
+        // Both instances of each role did work, so the no-duplicates result really covers concurrent instances.
+        for (RoleThread s : schedulers) assertTrue(s.metrics().get("reminders.published") > 0, "each scheduler published");
+        for (RoleThread d : dispatchers) assertTrue(d.metrics().get("dispatch.sent") > 0, "each dispatcher sent");
     }
 
     // 5. SEND_FAILURE_RATE=0.3 with 2 attempts: some sends after a retry, some dead-lettered; replay sends each dead key once.

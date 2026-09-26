@@ -15,14 +15,14 @@ import java.util.Set;
  * elsewhere in the unexplained-missing subtraction, with no trace of it in the report. With that
  * restriction the identity always holds, key for key:
  * {@code expected = sent + skippedLate + cancelled + dead + supersededBeforeSend + unexplainedMissing},
- * and {@code unexplainedMissing} is exactly {@code missedWhileLagging}. Outcomes that did land on a
+ * and {@code unexplainedMissing} is exactly {@code supersededAfterSendBy + neverSupersededNoOutcome}. Outcomes that did land on a
  * non-expected key are counted separately and reported, not silently dropped.
  */
 public final class CorrectnessSummary {
     private CorrectnessSummary() {}
 
     public record Result(long sent, long skippedLate, long cancelled, long dead, long supersededBeforeSend,
-                          long missedWhileLagging, long unexplainedMissing, double unexplainedMissingRatio,
+                          long supersededAfterSendBy, long neverSupersededNoOutcome, long unexplainedMissing, double unexplainedMissingRatio,
                           long outcomesOnNonExpectedKeys) {}
 
     public static Result compute(Set<String> expectedKeys, List<OutcomeRow> outcomes, List<CartScript> scripts,
@@ -42,6 +42,6 @@ public final class CorrectnessSummary {
         double ratio = Accounting.unexplainedMissingRatio(unexplainedMissing, expectedKeys.size());
 
         return new Result(sent, skippedLate, cancelled, dead, missing.supersededBeforeSend(),
-            missing.missedWhileLagging(), unexplainedMissing, ratio, outcomesOnNonExpectedKeys);
+            missing.supersededAfterSendBy(), missing.neverSupersededNoOutcome(), unexplainedMissing, ratio, outcomesOnNonExpectedKeys);
     }
 }

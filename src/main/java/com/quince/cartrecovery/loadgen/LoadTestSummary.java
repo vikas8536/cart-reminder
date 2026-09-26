@@ -30,7 +30,9 @@ public record LoadTestSummary(
     long duplicateSends,
     long postPurchaseSends,
     long supersededBeforeSend,
-    long missedWhileLagging,
+    /** Final review: unexplained missing split into pure lateness and possible silent loss; their sum is unexplainedMissing. */
+    long supersededAfterSendBy,
+    long neverSupersededNoOutcome,
     /** Fix round 2: outcomes recorded for a key {@link Expected} never counted; kept out of every other
      * count (see {@link CorrectnessSummary}) and reported here instead of silently dropped. */
     long outcomesOnNonExpectedKeys,

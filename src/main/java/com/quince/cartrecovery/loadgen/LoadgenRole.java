@@ -47,8 +47,6 @@ import java.util.stream.IntStream;
  * RATE, DURATION and RUN_PREFIX come from the environment (controller ruling R9).
  */
 public final class LoadgenRole implements Role {
-    /** The salt every infra role uses (RoleContext.ARM_SALT), so Expected skips exactly the detector's holdout carts. */
-    static final String ARM_SALT = "cart-recovery-v1";
 
     @Override public String name() { return "loadgen"; }
 
@@ -60,7 +58,8 @@ public final class LoadgenRole implements Role {
         Instant testStart = Instant.now();
         Workload.Result workload = Workload.generate(testStart.toEpochMilli(), runPrefix, rate, duration, testStart, config.recovery());
 
-        ArmAssigner assigner = new HashArmAssigner(ARM_SALT, config.recovery().holdoutPercent());
+        // The detector's salt, so Expected skips exactly its holdout carts.
+        ArmAssigner assigner = new HashArmAssigner(HashArmAssigner.SALT, config.recovery().holdoutPercent());
         Set<String> expectedKeys = Expected.keys(workload.scripts(), config.recovery(), assigner);
         // The publisher replays the nominal script shifted so its first event lands at testStart.
         Duration shift = workload.events().isEmpty() ? Duration.ZERO
@@ -157,7 +156,8 @@ public final class LoadgenRole implements Role {
             sampler.maxWatermarkLagMillis(), sampler.watermarkEverStale(), sampler.maxPastDueBacklog(),
             latencyByLane,
             expectedKeys.size(), correctness.sent(), correctness.skippedLate(), correctness.cancelled(), correctness.dead(),
-            duplicates, postPurchase, correctness.supersededBeforeSend(), correctness.missedWhileLagging(),
+            duplicates, postPurchase, correctness.supersededBeforeSend(), correctness.supersededAfterSendBy(),
+            correctness.neverSupersededNoOutcome(),
             correctness.outcomesOnNonExpectedKeys(), correctness.unexplainedMissing(), correctness.unexplainedMissingRatio(),
             !finalReadCaughtUp,
             Runtime.getRuntime().availableProcessors(), Runtime.getRuntime().maxMemory());

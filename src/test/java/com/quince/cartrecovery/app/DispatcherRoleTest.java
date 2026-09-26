@@ -12,6 +12,8 @@ import com.quince.cartrecovery.model.SendResult;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Predicate;
 import org.apache.kafka.common.TopicPartition;
 import org.junit.jupiter.api.Test;
@@ -31,6 +33,41 @@ class DispatcherRoleTest {
 
     void drainAll() {
         for (int i = 0; i < 1000 && bucket.tryAcquire(Lane.FAST); i++) { }
+    }
+
+    /** Minor: both lanes must drain at the same time, or shutdown can exceed Main's 30 s wait. */
+    @Test
+    void closeTogetherSignalsBothLanesBeforeAwaitingEither() {
+        CountDownLatch bothClosing = new CountDownLatch(2);
+        boolean[] met = new boolean[2];
+        Runnable[] lanes = new Runnable[2];
+        for (int i = 0; i < 2; i++) {
+            int lane = i;
+            lanes[i] = () -> {
+                bothClosing.countDown();
+                try {
+                    met[lane] = bothClosing.await(2, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            };
+        }
+        DispatcherRole.closeTogether(Duration.ofSeconds(5), lanes);
+        assertTrue(met[0] && met[1], "each lane was closing while the other was");
+    }
+
+    @Test
+    void closeTogetherReturnsAtTheSharedDeadline() {
+        long start = System.nanoTime();
+        Runnable hung = () -> {
+            try {
+                Thread.sleep(10_000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        };
+        DispatcherRole.closeTogether(Duration.ofMillis(300), hung, hung);
+        assertTrue(Duration.ofNanos(System.nanoTime() - start).compareTo(Duration.ofSeconds(2)) < 0);
     }
 
     @Test

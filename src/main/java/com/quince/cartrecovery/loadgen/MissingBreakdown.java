@@ -23,15 +23,16 @@ import java.util.Set;
  * resume, or this cycle's purchase) happened at or before that offset's {@code sendBy}
  * ({@code scheduledFor + latenessBound}, the same deadline the dispatcher's pre-check enforces): the
  * pipeline was never actually late, the cart just moved on first, and a correct pipeline sending
- * nothing here is exactly right. Otherwise — the superseding event landed after {@code sendBy}, or
- * there was no superseding event at all — the key is "missed while lagging": the reminder should
- * have gone out (or been explicitly skipped-late/dead-lettered) before the cart moved on, and it
- * wasn't, so it stays a real failure.
+ * nothing here is exactly right. Otherwise the key is a real failure, reported in two buckets (final
+ * review): "superseded after sendBy" when the superseding event landed after {@code sendBy} (pure
+ * lateness: the pipeline was too slow and the cart moved on first), and "never superseded, no outcome"
+ * when there was no superseding event at all (the reminder should have been sent, skipped-late or
+ * dead-lettered and nothing was recorded: possible silent loss).
  */
 public final class MissingBreakdown {
     private MissingBreakdown() {}
 
-    public record Result(long supersededBeforeSend, long missedWhileLagging) {}
+    public record Result(long supersededBeforeSend, long supersededAfterSendBy, long neverSupersededNoOutcome) {}
 
     /**
      * @param keysWithOutcome every key that resolved to a terminal outcome (SENT, SKIPPED_LATE, CANCELLED
@@ -40,7 +41,8 @@ public final class MissingBreakdown {
     public static Result compute(List<CartScript> scripts, RecoveryConfig config, ArmAssigner assigner,
                                   Set<String> keysWithOutcome) {
         long superseded = 0;
-        long missed = 0;
+        long late = 0;
+        long silent = 0;
         List<Duration> offsets = config.offsets();
         List<Duration> latenessBounds = config.latenessBounds();
         for (CartScript script : scripts) {
@@ -56,14 +58,16 @@ public final class MissingBreakdown {
                     String key = script.cartId() + ":" + cycle.version() + ":" + i;
                     if (keysWithOutcome.contains(key)) continue;   // has an outcome: not missing at all
                     Instant sendBy = dueAt.plus(latenessBounds.get(i));
-                    if (cycle.cancelledAt() != null && !cycle.cancelledAt().isAfter(sendBy)) {
+                    if (cycle.cancelledAt() == null) {
+                        silent++;
+                    } else if (!cycle.cancelledAt().isAfter(sendBy)) {
                         superseded++;
                     } else {
-                        missed++;
+                        late++;
                     }
                 }
             }
         }
-        return new Result(superseded, missed);
+        return new Result(superseded, late, silent);
     }
 }

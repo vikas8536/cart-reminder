@@ -63,12 +63,14 @@ public final class Report {
         md.append("- Post-purchase sends: **").append(s.postPurchaseSends()).append("**\n");
         md.append("- Superseded before send (a resume or purchase superseded the cycle at or before that offset's ")
           .append("sendBy — a correct non-send, excluded from unexplained missing): ").append(s.supersededBeforeSend()).append("\n");
-        md.append("- Missed while lagging (superseded only after sendBy, or never superseded at all — a real ")
-          .append("failure; equals unexplained missing exactly, key for key): ").append(s.missedWhileLagging()).append("\n");
+        md.append("- Superseded after sendBy (pure lateness: a resume or purchase superseded the cycle only after that ")
+          .append("offset's sendBy): ").append(s.supersededAfterSendBy()).append("\n");
+        md.append("- Never superseded, no outcome (the cart never moved on, yet no SENT, SKIPPED_LATE, CANCELLED or DEAD ")
+          .append("was recorded — possible silent loss): ").append(s.neverSupersededNoOutcome()).append("\n");
         md.append("- Outcomes on non-expected keys (an outcome recorded for a key Expected never counted — e.g. a ")
           .append("real-vs-nominal timing edge at a cycle boundary; excluded from every count above so it can't ")
           .append("silently cancel out a real miss): ").append(s.outcomesOnNonExpectedKeys()).append("\n");
-        md.append("- Unexplained missing: ").append(s.unexplainedMissing())
+        md.append("- Unexplained missing (superseded after sendBy + never superseded, no outcome): ").append(s.unexplainedMissing())
           .append(" (").append(String.format("%.4f", s.unexplainedMissingRatio() * 100)).append("% of expected)\n\n");
 
         md.append("## Machine\n\n");

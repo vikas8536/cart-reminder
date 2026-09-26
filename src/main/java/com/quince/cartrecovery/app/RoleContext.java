@@ -26,8 +26,6 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 
 /** The clients one role process shares, the startup check every role runs, and the loop runner. */
 public final class RoleContext implements AutoCloseable {
-    public static final String ARM_SALT = "cart-recovery-v1";
-
     private final InfraConfig config;
     private final DynamoDbClient dynamo;
     private final RedisClient redisClient;

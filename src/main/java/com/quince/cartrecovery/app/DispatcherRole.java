@@ -18,6 +18,7 @@ import com.quince.cartrecovery.ports.Clock;
 import com.quince.cartrecovery.ports.Watermark;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -70,9 +71,22 @@ public final class DispatcherRole implements Role {
             Runnable control = () -> controlLoop(dispatcher, breaker, meta, metaPaused, holds, config, running, health, metrics);
             RoleContext.runLoops(() -> {
                 running.set(false);
-                fast.close();
-                slow.close();
+                closeTogether(CLOSE_DEADLINE, fast::close, slow::close);
             }, List.of(fast::run, slow::run, control));
+        }
+    }
+
+    /** Both lanes drain at once within one deadline, inside Main's 30 s shutdown wait. */
+    static final Duration CLOSE_DEADLINE = BatchConsumerLoop.DRAIN_BUDGET.plusSeconds(2);
+
+    /** Starts every closer at once, then waits for all of them until one shared deadline. */
+    static void closeTogether(Duration deadline, Runnable... closers) {
+        List<Thread> threads = Arrays.stream(closers).map(c -> Thread.ofVirtual().start(c)).toList();
+        long end = System.nanoTime() + deadline.toNanos();
+        try {
+            for (Thread t : threads) t.join(Duration.ofNanos(Math.max(1, end - System.nanoTime())));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 

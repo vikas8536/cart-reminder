@@ -60,6 +60,21 @@ public abstract class WatermarkContract {
         assertEquals(E, watermark.current(0));
     }
 
+    /**
+     * Final review finding 1: after a consumer-group reset the generation restarts low. Once the stored entry is
+     * stale (the same 5 s the reader uses), a lower generation is accepted; its T is backed by its own commit.
+     */
+    @Test
+    void aLowerGenerationIsAcceptedOnceTheStoredEntryIsStale() {
+        watermark.publish(0, 50, E.plusSeconds(60));
+        advance(Duration.ofSeconds(6));
+        watermark.publish(0, 1, E);
+        assertEquals(E, watermark.current(0));
+
+        watermark.publish(0, 1, E.plusSeconds(1));
+        assertEquals(E.plusSeconds(1), watermark.current(0), "the new generation now owns the entry");
+    }
+
     @Test
     void aHigherGenerationOverwritesEvenWithAnEarlierTime() {
         watermark.publish(0, 4, E.plusSeconds(60));

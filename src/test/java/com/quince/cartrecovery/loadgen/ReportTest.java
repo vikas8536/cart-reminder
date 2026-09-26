@@ -32,9 +32,9 @@ class ReportTest {
                    "slow", new Percentiles.Result(900, 1600, 2400, 500)),
             10000, 9985, 5, 3, 2,
             0, 0,
-            4, 1,
+            4, 1, 2,
             6,
-            1, 0.0001,
+            3, 0.0003,
             finalReadTimedOut,
             8, 16L * 1024 * 1024 * 1024);
     }
@@ -54,10 +54,13 @@ class ReportTest {
         assertTrue(md.contains("Duplicate sends: **0**"));
         assertTrue(md.contains("Post-purchase sends: **0**"));
         assertTrue(md.contains("Superseded before send"));
-        assertTrue(md.contains("Missed while lagging"));
+        assertTrue(md.contains("Superseded after sendBy (pure lateness"));
+        assertTrue(md.contains("sendBy): 1\n"), "supersededAfterSendBy value must render");
+        assertTrue(md.contains("Never superseded, no outcome ("));
+        assertTrue(md.contains("possible silent loss): 2\n"), "neverSupersededNoOutcome value must render");
         assertTrue(md.contains("Outcomes on non-expected keys"));
         assertTrue(md.contains("): 6\n"), "outcomesOnNonExpectedKeys value must render");
-        assertTrue(md.contains("Unexplained missing: 1"));
+        assertTrue(md.contains("never superseded, no outcome): 3 ("));
         assertTrue(md.contains("305 s actual publish span"));
         assertTrue(md.contains("nominal DURATION was 300 s"));
         assertTrue(md.contains("Cores: 8"));

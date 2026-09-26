@@ -29,7 +29,30 @@ class DetectorWatermarkHooksTest {
     final FakeConsumer broker = new FakeConsumer();
     final Metrics metrics = new Metrics();
     final long[] nanos = {0};
-    final DetectorWatermarkHooks hooks = new DetectorWatermarkHooks(watermark, new Health(), metrics, () -> nanos[0]);
+    final Health health = new Health();
+    final DetectorWatermarkHooks hooks = new DetectorWatermarkHooks(watermark, health, metrics, () -> nanos[0]);
+
+    /** Final review finding 6: /ready must not keep showing the last good lag while the partition is stale. */
+    @Test
+    void readyShowsStaleWhileNoSnapshotIsSatisfiedAndTheLagOnceOneIs() {
+        broker.assignment = Set.of(P0);
+        broker.ends.put(P0, 5L);
+        broker.committed.put(P0, 5L);
+        hooks.beforePoll(broker.proxy());
+        hooks.afterCommit(broker.proxy(), Map.of(), 1);
+        assertEquals("0", health.readiness().get("watermark.lag_ms.p0"));
+
+        nanos[0] += Duration.ofMillis(300).toNanos();
+        broker.ends.put(P0, 10L);
+        hooks.beforePoll(broker.proxy());                  // new records: the partition is now behind
+        nanos[0] += Duration.ofSeconds(3).toNanos();       // and every snapshot it satisfied has aged out
+        hooks.afterCommit(broker.proxy(), Map.of(), 1);
+        assertEquals("stale", health.readiness().get("watermark.lag_ms.p0"));
+
+        hooks.beforePoll(broker.proxy());
+        hooks.afterCommit(broker.proxy(), Map.of(P0, 10L), 1);
+        assertEquals("0", health.readiness().get("watermark.lag_ms.p0"));
+    }
 
     @Test
     void idlePartitionPublishesAtOnceEvenWithoutANewCommit() {
