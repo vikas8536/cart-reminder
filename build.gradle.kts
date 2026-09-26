@@ -43,7 +43,7 @@ dependencies {
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 
-    "integrationTestImplementation"(platform("org.testcontainers:testcontainers-bom:1.21.2"))
+    "integrationTestImplementation"(platform("org.testcontainers:testcontainers-bom:1.21.4"))
     "integrationTestImplementation"("org.testcontainers:junit-jupiter")
     "integrationTestImplementation"("org.testcontainers:kafka")
 }
