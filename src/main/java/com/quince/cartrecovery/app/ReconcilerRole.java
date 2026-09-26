@@ -34,7 +34,8 @@ import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
 
 /**
- * Every second: on a Redis run_id or role change, replay the last 60 s of cart-events into timer upserts
+ * Every second: check the Redis run_id and role (recording a change when it is observed, even mid-sweep); on a
+ * change, once the current work finishes, replay cart-events from 60 s before the recorded change into timer upserts
  * (spec §6.2 failover replay); otherwise sweep all shards when the epoch is missing, at start, and every
  * RECONCILE_INTERVAL. One piece of work runs at a time on a platform worker thread.
  */
@@ -60,7 +61,7 @@ public final class ReconcilerRole implements Role {
         }
     }
 
-    private static final class Cycle {
+    static final class Cycle {
         private final InfraConfig config;
         private final RedisMeta redis;
         private final TimerStore timers;
@@ -90,9 +91,10 @@ public final class ReconcilerRole implements Role {
             try {
                 while (running.get()) {
                     health.beat("reconciler");
-                    if (current == null || current.isDone()) {
+                    Identity identity = observeIdentity();   // every tick, even while work is in flight
+                    if (identity != null && (current == null || current.isDone())) {
                         report();
-                        current = next(work);
+                        current = next(work, identity);
                     }
                     if (!RoleContext.sleep(TICK)) return;
                 }
@@ -114,18 +116,38 @@ public final class ReconcilerRole implements Role {
             current = null;
         }
 
-        private Future<?> next(ExecutorService work) {
+        /** The current Redis identity, and whether it differs from the one stored in recovery-meta. */
+        private record Identity(String runId, String role, boolean changed) {}
+
+        /**
+         * Reads the Redis identity and, on a change, records it at the time it is observed (markRedisChange keeps the
+         * earliest unrepaired change), so a long sweep cannot push the replay's lookback past the change. Null when
+         * Redis or DynamoDB is unreachable (or init has not run): counted, retried next tick.
+         */
+        private Identity observeIdentity() {
             try {
                 String runId = redis.runId();
                 String role = redis.role();
-                RecoveryMetaStore.Meta m = meta.read();   // throws when init has not run: counted below, retried next tick
+                RecoveryMetaStore.Meta m = meta.read();
                 if (m.redisRunId() == null) {
                     meta.setRedisIdentity(runId, role);
-                } else if (!runId.equals(m.redisRunId()) || !role.equals(m.redisRole())) {
-                    meta.markRedisChange(Instant.now());   // keeps the earliest unrepaired change
+                    return new Identity(runId, role, false);
+                }
+                boolean changed = !runId.equals(m.redisRunId()) || !role.equals(m.redisRole());
+                if (changed) meta.markRedisChange(Instant.now());
+                return new Identity(runId, role, changed);
+            } catch (RuntimeException e) {
+                metrics.increment("reconciler.errors");
+                return null;
+            }
+        }
+
+        private Future<?> next(ExecutorService work, Identity identity) {
+            try {
+                if (identity.changed()) {
                     Instant stored = meta.read().redisChangeAt();
                     Instant changeAt = stored != null ? stored : Instant.now();
-                    return work.submit(() -> { replay(runId, role, changeAt); return null; });
+                    return work.submit(() -> { replay(identity.runId(), identity.role(), changeAt); return null; });
                 }
                 boolean due = lastSweep == null || !Instant.now().isBefore(lastSweep.plus(config.reconcileInterval()));
                 if (due || !redis.epochPresent()) {
