@@ -1,7 +1,7 @@
-package com.quince.cartrecovery.inmemory;
+package com.quince.cartrecovery.legacy.inmemory;
 
-import com.quince.cartrecovery.model.DeadLetter;
-import com.quince.cartrecovery.ports.DeadLetterQueue;
+import com.quince.cartrecovery.legacy.model.DeadLetter;
+import com.quince.cartrecovery.legacy.ports.DeadLetterQueue;
 import java.util.ArrayList;
 import java.util.List;
 

@@ -1,6 +1,7 @@
 package com.quince.cartrecovery;
 
-import com.quince.cartrecovery.inmemory.RecordingNotificationSink;
+import com.quince.cartrecovery.legacy.Pipeline;
+import com.quince.cartrecovery.legacy.inmemory.RecordingNotificationSink;
 import com.quince.cartrecovery.model.Arm;
 import com.quince.cartrecovery.model.CartEvent;
 import com.quince.cartrecovery.model.CartItem;

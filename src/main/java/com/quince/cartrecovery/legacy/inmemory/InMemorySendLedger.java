@@ -1,7 +1,7 @@
-package com.quince.cartrecovery.inmemory;
+package com.quince.cartrecovery.legacy.inmemory;
 
-import com.quince.cartrecovery.model.NotificationIntent;
-import com.quince.cartrecovery.ports.SendLedger;
+import com.quince.cartrecovery.legacy.model.NotificationIntent;
+import com.quince.cartrecovery.legacy.ports.SendLedger;
 import java.util.HashMap;
 import java.util.Map;
 

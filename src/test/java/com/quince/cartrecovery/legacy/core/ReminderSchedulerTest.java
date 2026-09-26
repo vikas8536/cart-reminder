@@ -1,20 +1,23 @@
-package com.quince.cartrecovery.core;
+package com.quince.cartrecovery.legacy.core;
+
+import com.quince.cartrecovery.core.Metrics;
+import com.quince.cartrecovery.core.ReminderPolicy;
 
 import static com.quince.cartrecovery.TestSupport.*;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.quince.cartrecovery.inmemory.FakeClock;
-import com.quince.cartrecovery.inmemory.InMemoryCartStateStore;
-import com.quince.cartrecovery.inmemory.InMemoryOutbox;
-import com.quince.cartrecovery.inmemory.InMemorySendLedger;
-import com.quince.cartrecovery.inmemory.PriorityQueueTimerStore;
+import com.quince.cartrecovery.legacy.inmemory.InMemoryCartStateStore;
+import com.quince.cartrecovery.legacy.inmemory.InMemoryOutbox;
+import com.quince.cartrecovery.legacy.inmemory.InMemorySendLedger;
+import com.quince.cartrecovery.legacy.inmemory.PriorityQueueTimerStore;
 import com.quince.cartrecovery.model.Arm;
 import com.quince.cartrecovery.model.CartRecord;
 import com.quince.cartrecovery.model.CartStatus;
 import com.quince.cartrecovery.model.RecoveryConfig;
 import com.quince.cartrecovery.model.Timer;
-import com.quince.cartrecovery.ports.CartStateStore;
+import com.quince.cartrecovery.legacy.ports.CartStateStore;
 import java.time.Duration;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;

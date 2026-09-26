@@ -1,7 +1,7 @@
-package com.quince.cartrecovery.inmemory;
+package com.quince.cartrecovery.legacy.inmemory;
 
 import com.quince.cartrecovery.model.Timer;
-import com.quince.cartrecovery.ports.TimerStore;
+import com.quince.cartrecovery.legacy.ports.TimerStore;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;

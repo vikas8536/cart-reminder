@@ -1,6 +1,6 @@
-package com.quince.cartrecovery.ports;
+package com.quince.cartrecovery.legacy.ports;
 
-import com.quince.cartrecovery.model.OutboxEntry;
+import com.quince.cartrecovery.legacy.model.OutboxEntry;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;

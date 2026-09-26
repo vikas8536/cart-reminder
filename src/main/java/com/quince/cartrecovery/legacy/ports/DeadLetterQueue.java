@@ -1,6 +1,6 @@
-package com.quince.cartrecovery.ports;
+package com.quince.cartrecovery.legacy.ports;
 
-import com.quince.cartrecovery.model.DeadLetter;
+import com.quince.cartrecovery.legacy.model.DeadLetter;
 import java.util.List;
 
 public interface DeadLetterQueue {

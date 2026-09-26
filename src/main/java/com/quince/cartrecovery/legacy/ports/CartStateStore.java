@@ -1,4 +1,4 @@
-package com.quince.cartrecovery.ports;
+package com.quince.cartrecovery.legacy.ports;
 
 import com.quince.cartrecovery.model.CartRecord;
 import java.util.List;

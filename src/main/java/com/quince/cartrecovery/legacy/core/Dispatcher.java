@@ -1,17 +1,20 @@
-package com.quince.cartrecovery.core;
+package com.quince.cartrecovery.legacy.core;
+
+import com.quince.cartrecovery.core.Metrics;
+import com.quince.cartrecovery.core.ReminderPolicy;
 
 import com.quince.cartrecovery.model.CartRecord;
 import com.quince.cartrecovery.model.CartStatus;
-import com.quince.cartrecovery.model.DeadLetter;
-import com.quince.cartrecovery.model.NotificationIntent;
-import com.quince.cartrecovery.model.OutboxEntry;
+import com.quince.cartrecovery.legacy.model.DeadLetter;
+import com.quince.cartrecovery.legacy.model.NotificationIntent;
+import com.quince.cartrecovery.legacy.model.OutboxEntry;
 import com.quince.cartrecovery.model.RecoveryConfig;
 import com.quince.cartrecovery.model.SendResult;
-import com.quince.cartrecovery.ports.CartStateStore;
+import com.quince.cartrecovery.legacy.ports.CartStateStore;
 import com.quince.cartrecovery.ports.Clock;
-import com.quince.cartrecovery.ports.DeadLetterQueue;
-import com.quince.cartrecovery.ports.NotificationSink;
-import com.quince.cartrecovery.ports.Outbox;
+import com.quince.cartrecovery.legacy.ports.DeadLetterQueue;
+import com.quince.cartrecovery.legacy.ports.NotificationSink;
+import com.quince.cartrecovery.legacy.ports.Outbox;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;

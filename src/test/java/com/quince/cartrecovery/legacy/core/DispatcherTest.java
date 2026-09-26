@@ -1,20 +1,23 @@
-package com.quince.cartrecovery.core;
+package com.quince.cartrecovery.legacy.core;
+
+import com.quince.cartrecovery.core.Metrics;
+import com.quince.cartrecovery.core.ReminderPolicy;
 
 import static com.quince.cartrecovery.TestSupport.*;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import com.quince.cartrecovery.inmemory.FakeClock;
-import com.quince.cartrecovery.inmemory.InMemoryCartStateStore;
-import com.quince.cartrecovery.inmemory.InMemoryDeadLetterQueue;
-import com.quince.cartrecovery.inmemory.InMemoryOutbox;
-import com.quince.cartrecovery.inmemory.RecordingNotificationSink;
+import com.quince.cartrecovery.legacy.inmemory.InMemoryCartStateStore;
+import com.quince.cartrecovery.legacy.inmemory.InMemoryDeadLetterQueue;
+import com.quince.cartrecovery.legacy.inmemory.InMemoryOutbox;
+import com.quince.cartrecovery.legacy.inmemory.RecordingNotificationSink;
 import com.quince.cartrecovery.model.Arm;
 import com.quince.cartrecovery.model.CartRecord;
-import com.quince.cartrecovery.model.NotificationIntent;
-import com.quince.cartrecovery.model.OutboxEntry;
+import com.quince.cartrecovery.legacy.model.NotificationIntent;
+import com.quince.cartrecovery.legacy.model.OutboxEntry;
 import com.quince.cartrecovery.model.RecoveryConfig;
 import com.quince.cartrecovery.model.SendResult;
-import com.quince.cartrecovery.ports.CartStateStore;
+import com.quince.cartrecovery.legacy.ports.CartStateStore;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;

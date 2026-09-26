@@ -1,11 +1,14 @@
-package com.quince.cartrecovery.core;
+package com.quince.cartrecovery.legacy.core;
+
+import com.quince.cartrecovery.core.Metrics;
+import com.quince.cartrecovery.core.ReminderPolicy;
 
 import static com.quince.cartrecovery.TestSupport.*;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import com.quince.cartrecovery.inmemory.InMemoryCartStateStore;
-import com.quince.cartrecovery.inmemory.PriorityQueueTimerStore;
+import com.quince.cartrecovery.legacy.inmemory.InMemoryCartStateStore;
+import com.quince.cartrecovery.legacy.inmemory.PriorityQueueTimerStore;
 import com.quince.cartrecovery.model.Arm;
 import com.quince.cartrecovery.model.CartRecord;
 import com.quince.cartrecovery.model.CartStatus;

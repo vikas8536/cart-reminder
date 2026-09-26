@@ -1,9 +1,9 @@
-package com.quince.cartrecovery.inmemory;
+package com.quince.cartrecovery.legacy.inmemory;
 
-import com.quince.cartrecovery.model.NotificationIntent;
+import com.quince.cartrecovery.legacy.model.NotificationIntent;
 import com.quince.cartrecovery.model.SendResult;
 import com.quince.cartrecovery.ports.Clock;
-import com.quince.cartrecovery.ports.NotificationSink;
+import com.quince.cartrecovery.legacy.ports.NotificationSink;
 import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;

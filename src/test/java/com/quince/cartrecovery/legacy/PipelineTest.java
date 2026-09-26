@@ -1,4 +1,4 @@
-package com.quince.cartrecovery;
+package com.quince.cartrecovery.legacy;
 
 import static com.quince.cartrecovery.TestSupport.*;
 import static org.junit.jupiter.api.Assertions.assertEquals;

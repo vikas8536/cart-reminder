@@ -1,4 +1,4 @@
-package com.quince.cartrecovery.inmemory;
+package com.quince.cartrecovery.legacy.inmemory;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;

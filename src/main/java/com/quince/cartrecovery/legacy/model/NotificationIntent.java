@@ -1,4 +1,6 @@
-package com.quince.cartrecovery.model;
+package com.quince.cartrecovery.legacy.model;
+
+import com.quince.cartrecovery.model.CartItem;
 
 import java.time.Instant;
 import java.util.List;

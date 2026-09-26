@@ -1,4 +1,4 @@
-package com.quince.cartrecovery.model;
+package com.quince.cartrecovery.legacy.model;
 
 import java.time.Instant;
 

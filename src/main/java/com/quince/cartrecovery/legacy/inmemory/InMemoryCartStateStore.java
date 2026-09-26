@@ -1,8 +1,8 @@
-package com.quince.cartrecovery.inmemory;
+package com.quince.cartrecovery.legacy.inmemory;
 
 import com.quince.cartrecovery.model.CartRecord;
 import com.quince.cartrecovery.model.CartStatus;
-import com.quince.cartrecovery.ports.CartStateStore;
+import com.quince.cartrecovery.legacy.ports.CartStateStore;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;

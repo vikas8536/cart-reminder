@@ -1,4 +1,4 @@
-package com.quince.cartrecovery.ports;
+package com.quince.cartrecovery.legacy.ports;
 
 /** Dedupe ledger keyed by cart id, version, offset index. Production: DynamoDB conditional put. */
 public interface SendLedger {

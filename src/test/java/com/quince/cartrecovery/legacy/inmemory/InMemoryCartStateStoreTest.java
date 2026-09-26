@@ -1,4 +1,4 @@
-package com.quince.cartrecovery.inmemory;
+package com.quince.cartrecovery.legacy.inmemory;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -7,7 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.quince.cartrecovery.model.Arm;
 import com.quince.cartrecovery.model.CartRecord;
 import com.quince.cartrecovery.model.CartStatus;
-import com.quince.cartrecovery.ports.CartStateStore;
+import com.quince.cartrecovery.legacy.ports.CartStateStore;
 import java.time.Instant;
 import java.util.List;
 import org.junit.jupiter.api.Test;

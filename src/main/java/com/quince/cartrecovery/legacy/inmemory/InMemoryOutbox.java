@@ -1,7 +1,7 @@
-package com.quince.cartrecovery.inmemory;
+package com.quince.cartrecovery.legacy.inmemory;
 
-import com.quince.cartrecovery.model.OutboxEntry;
-import com.quince.cartrecovery.ports.Outbox;
+import com.quince.cartrecovery.legacy.model.OutboxEntry;
+import com.quince.cartrecovery.legacy.ports.Outbox;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;

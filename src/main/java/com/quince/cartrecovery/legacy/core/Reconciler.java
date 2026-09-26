@@ -1,12 +1,15 @@
-package com.quince.cartrecovery.core;
+package com.quince.cartrecovery.legacy.core;
+
+import com.quince.cartrecovery.core.Metrics;
+import com.quince.cartrecovery.core.ReminderPolicy;
 
 import com.quince.cartrecovery.model.CartRecord;
 import com.quince.cartrecovery.model.RecoveryConfig;
 import com.quince.cartrecovery.model.Timer;
-import com.quince.cartrecovery.ports.CartStateStore;
+import com.quince.cartrecovery.legacy.ports.CartStateStore;
 import com.quince.cartrecovery.ports.Clock;
-import com.quince.cartrecovery.ports.SendLedger;
-import com.quince.cartrecovery.ports.TimerStore;
+import com.quince.cartrecovery.legacy.ports.SendLedger;
+import com.quince.cartrecovery.legacy.ports.TimerStore;
 
 /**
  * Rebuilds the timer index from durable state. The timer store is derived data:
