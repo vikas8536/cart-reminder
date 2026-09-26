@@ -87,7 +87,7 @@ public final class Pipeline {
 
     public static Pipeline withDefaults(Instant start) {
         RecoveryConfig config = RecoveryConfig.defaults();
-        return new Pipeline(config, start, new HashArmAssigner("cart-recovery-v1", config.holdoutPercent()));
+        return new Pipeline(config, start, new HashArmAssigner(HashArmAssigner.SALT, config.holdoutPercent()));
     }
 
     /**

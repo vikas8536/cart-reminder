@@ -29,7 +29,7 @@ public final class DetectorRole implements Role {
             AbandonmentDetector detector = new AbandonmentDetector(config.recovery(),
                 new DynamoCartStateStore(ctx.dynamo(), DynamoTables.CARTS, config.recovery(), config.shards()),
                 new RedisTimerStore(ctx.redis(), config.shards(), config.dispatch().lease()),
-                new HashArmAssigner(RoleContext.ARM_SALT, config.recovery().holdoutPercent()), metrics);
+                new HashArmAssigner(HashArmAssigner.SALT, config.recovery().holdoutPercent()), metrics);
             DetectorWatermarkHooks hooks = new DetectorWatermarkHooks(
                 new RedisWatermark(ctx.redis(), config.partitions()), health, metrics, System::nanoTime);
             BatchConsumerLoop<byte[]> loop = new BatchConsumerLoop<>(ctx.consumerProps(GROUP),
