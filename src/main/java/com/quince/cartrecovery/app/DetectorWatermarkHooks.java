@@ -18,7 +18,8 @@ import org.apache.kafka.common.TopicPartition;
  * Spec §5.4 watermark writes. beforePoll: at most every 250 ms, read Redis TIME as T and then the end
  * offsets E of the assigned partitions (a failed call takes no snapshot). afterCommit, every iteration
  * including empty polls and backoff: for each assigned partition publish T of the newest snapshot whose
- * E[p] is at or below the committed position; write nothing when none is satisfied.
+ * E[p] is at or below the committed position; write nothing when none is satisfied (/ready then shows
+ * {@code watermark.lag_ms.p<n>: stale}).
  * Snapshots older than KEEP x 250 ms (2 s) do not count, so a detector cut off from the broker stops writing
  * and its entries go stale (spec §5.4); the ring is not cleared on a failure, since behind partitions need it. Poll thread only.
  */
@@ -69,9 +70,11 @@ final class DetectorWatermarkHooks implements BatchConsumerLoop.Hooks<byte[]> {
         });
         for (TopicPartition p : assigned) {
             Long position = committed.get(p);
-            if (position == null) continue;
-            Optional<Instant> t = snapshots.satisfied(p, position, nowNanos);
-            if (t.isEmpty()) continue;   // nothing satisfied: write nothing, the entry goes stale after 5 s
+            Optional<Instant> t = position == null ? Optional.empty() : snapshots.satisfied(p, position, nowNanos);
+            if (t.isEmpty()) {   // nothing satisfied: write nothing, the entry goes stale after 5 s
+                health.setReady("watermark.lag_ms.p" + p.partition(), "stale");
+                continue;
+            }
             try {
                 watermark.publish(p.partition(), generation, t.get());
                 long lagMs = Duration.between(t.get(), snapshots.newest().orElse(t.get())).toMillis();
