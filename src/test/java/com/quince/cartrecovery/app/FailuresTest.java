@@ -24,5 +24,14 @@ class FailuresTest {
     @Test void wrappedValidationErrorIsDeterministic() {
         assertTrue(Failures.isDeterministic(new CompletionException(aws(400, "ValidationException"))));
     }
+    @Test void serializationErrorIsDeterministic() { assertTrue(Failures.isDeterministic(aws(400, "SerializationException"))); }
+    // Final review finding 2: an infrastructure 400 (deleted table, IAM) must be retried, never dead-lettered.
+    @Test void missingTableIsTransient() { assertFalse(Failures.isDeterministic(aws(400, "ResourceNotFoundException"))); }
+    @Test void accessDeniedIsTransient() { assertFalse(Failures.isDeterministic(aws(400, "AccessDeniedException"))); }
+    @Test void badCredentialsAreTransient() { assertFalse(Failures.isDeterministic(aws(400, "UnrecognizedClientException"))); }
+    @Test void wrappedMissingTableIsTransient() {
+        assertFalse(Failures.isDeterministic(new CompletionException(aws(400, "ResourceNotFoundException"))));
+    }
+    @Test void validationCodeOnANon400IsTransient() { assertFalse(Failures.isDeterministic(aws(500, "ValidationException"))); }
     @Test void ioErrorIsTransient() { assertFalse(Failures.isDeterministic(new UncheckedIOException(new IOException("reset")))); }
 }

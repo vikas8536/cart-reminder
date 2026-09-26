@@ -63,9 +63,9 @@ public final class SchedulerRole implements Role {
     }
 
     /**
-     * Ack after processing; Release for the gate. Deterministic SDK errors (DynamoDB ValidationException and other
-     * non-retryable 400s, see Failures) are poison: ack and count timers.poison (controller ruling R13). Others stay
-     * leased for redelivery.
+     * Ack after processing; Release for the gate. Deterministic SDK errors (DynamoDB ValidationException or
+     * SerializationException, the allow-list in Failures) are poison: ack and count timers.poison (controller ruling
+     * R13). Others, including a missing table or an IAM error, stay leased for redelivery.
      */
     static void fire(TimerStore timers, ReminderScheduler scheduler, Timer timer, Metrics metrics) {
         try {
