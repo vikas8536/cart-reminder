@@ -1,6 +1,6 @@
 package com.quince.cartrecovery.inmemory;
 
-import com.quince.cartrecovery.model.NotificationIntent;
+import com.quince.cartrecovery.model.ReminderMessage;
 import com.quince.cartrecovery.model.SendResult;
 import com.quince.cartrecovery.ports.Clock;
 import com.quince.cartrecovery.ports.NotificationSink;
@@ -12,7 +12,7 @@ import java.util.List;
 
 /** Records what would have been sent. Never sends. Outcomes can be scripted for failure scenarios. */
 public final class RecordingNotificationSink implements NotificationSink {
-    public record Sent(NotificationIntent intent, Instant sentAt) {}
+    public record Sent(ReminderMessage message, Instant sentAt) {}
 
     private final Clock clock;
     private final List<Sent> sent = new ArrayList<>();
@@ -22,17 +22,20 @@ public final class RecordingNotificationSink implements NotificationSink {
     public RecordingNotificationSink(Clock clock) { this.clock = clock; }
 
     /** The next calls to send return these results in order, then SENT. */
-    public void scriptOutcomes(SendResult... results) {
+    public synchronized void scriptOutcomes(SendResult... results) {
         scripted.addAll(List.of(results));
     }
 
-    @Override public SendResult send(NotificationIntent intent) {
+    @Override public synchronized SendResult send(ReminderMessage message) {
         attempts++;
         SendResult result = scripted.isEmpty() ? SendResult.SENT : scripted.poll();
-        if (result == SendResult.SENT) sent.add(new Sent(intent, clock.now()));
+        if (result == SendResult.SENT) sent.add(new Sent(message, clock.now()));
         return result;
     }
 
-    public List<Sent> sent() { return List.copyOf(sent); }
-    public int attempts() { return attempts; }
+    /** Successful sends only, in order. */
+    public synchronized List<Sent> sent() { return List.copyOf(sent); }
+
+    /** Every send call, including failures. */
+    public synchronized int attempts() { return attempts; }
 }
