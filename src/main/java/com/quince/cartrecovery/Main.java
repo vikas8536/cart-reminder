@@ -13,10 +13,6 @@ import com.quince.cartrecovery.model.CartEvent;
 import com.quince.cartrecovery.model.CartItem;
 import com.quince.cartrecovery.model.LedgerKey;
 import com.quince.cartrecovery.model.RecoveryConfig;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -45,7 +41,6 @@ public final class Main {
 
     /**
      * --mode=inmemory (default): the fake-clock demo. --role=<name>: one infra role until SIGTERM.
-     * --role=healthcheck: GET localhost /health, exit 0 when healthy (compose healthcheck without curl).
      */
     static int run(String[] args, Map<String, String> env) {
         String role = option(args, "--role");
@@ -58,10 +53,9 @@ public final class Main {
             System.err.println("unknown mode: " + mode + " (expected --mode=inmemory or --role=<name>)");
             return 2;
         }
-        if (role.equals("healthcheck")) return healthcheck(env);
         Optional<Role> found = RoleRegistry.create(role);
         if (found.isEmpty()) {
-            System.err.println("unknown role: " + role + " (expected one of " + RoleRegistry.NAMES + " or healthcheck)");
+            System.err.println("unknown role: " + role + " (expected one of " + RoleRegistry.NAMES + ")");
             return 2;
         }
         InfraConfig config;
@@ -130,19 +124,6 @@ public final class Main {
                 System.out.printf("role=%s metrics=%s%n", roleName, metrics.snapshot());
             }
         });
-    }
-
-    private static int healthcheck(Map<String, String> env) {
-        try {
-            int port = Integer.parseInt(env.getOrDefault("HEALTH_PORT", "8081"));   // InfraConfig's default
-            HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build();
-            HttpResponse<Void> response = client.send(
-                HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/health")).timeout(Duration.ofSeconds(2)).build(),
-                HttpResponse.BodyHandlers.discarding());
-            return response.statusCode() == 200 ? 0 : 1;
-        } catch (Exception e) {
-            return 1;
-        }
     }
 
     private static String option(String[] args, String name) {
