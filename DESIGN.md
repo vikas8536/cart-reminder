@@ -21,7 +21,7 @@ The runnable pipeline in this repository implements detection, scheduling, cance
 
 **Success.** Primary: recovery rate, the share of abandoned carts that purchase within 7 days of abandonment, treatment versus holdout, reported with confidence intervals. Secondary: recovered revenue per abandoned cart, time to recovery. Attribution uses the purchase event, not link clicks, so open and click tracking do not bias it.
 
-**Guardrails, the signs of harm.** Unsubscribe and spam-complaint rates per send, bounce rate, sends after purchase, duplicate sends, sends per shopper per day against the frequency cap, and holdout purchase rate not dropping. Any of these breaching its threshold pauses dispatch. Production design only: the in-memory pipeline counts sends, cancellations, skips, and dead letters, but has no thresholds or pause switch.
+**Guardrails, the signs of harm.** Unsubscribe and spam-complaint rates per send, bounce rate, sends after purchase, duplicate sends, sends per shopper per day against the frequency cap, and holdout purchase rate not dropping. Any of these breaching its threshold pauses dispatch. The infra build implements the switch itself: a `recovery-meta.paused` flag, checked by every dispatcher replica every 5 seconds, pauses both lanes within one poll cycle once set. The in-memory pipeline still only counts sends, cancellations, skips, and dead letters, with no threshold logic of its own. Every abandonment, treatment or holdout, is recorded once as an `ABANDONED` outcome tagged with its arm, so the control-group denominator (abandoned carts per arm) comes from the same event stream as the guardrail counts, not a separate query.
 
 **System health.** Consumer lag, timer backlog past due, fire latency p99, dead letter depth, dedupe hit rate, skipped-for-lateness count.
 
@@ -36,7 +36,7 @@ Event-driven, with lazily validated timers. A batch scan every minute would be s
 | Component | Job | Talks to |
 |---|---|---|
 | Cart Service (existing) | Publishes `CartEdited`, `CartResumed`, `CartCleared`, `CartPurchased` with cart id, shopper key, version, time, item snapshot | `cart-events` stream, 64 partitions keyed by cart id |
-| Abandonment Detector | Upserts the cart record and one version-tagged timer per cart. Ignores events at or below the stored version. Commits the offset after the state write. | Cart State Store, Timer Store |
+| Abandonment Detector | Writes the timer first, then a field-scoped conditional update to the cart record; ignores events at or below the stored version; commits the offset after both writes. | Cart State Store, Timer Store |
 | Cart State Store | One record per cart: status, version, last activity, snapshot, arm, sequence starts. Conditional writes on version. | DynamoDB |
 | Timer Store | Due-time index, one timer per cart, upsert replaces. Derived and rebuildable. | Redis sorted set, 64 shards by cart hash |
 | Timer Sweepers | Pop due timers per shard in bounded batches under a short lease. An expired lease returns the timer, giving at-least-once timer delivery. | Reminder Worker |
@@ -65,6 +65,8 @@ flowchart LR
   RC --> T
 ```
 
+The timer-before-record order above lives in the shared `AbandonmentDetector`, so in memory writes in the same order too (Section 11): a crash between the two writes leaves at most a stray timer, which the reconciler repairs from the record, while leaving the record first would let a crash hide an abandoned cart until the next sweep finds it by a wider scan. What is production-only is the crash this protects against: `DynamoCartStateStore` and the Redis timer store are two independent stores that can fail between one write and the next, and the field-scoped `UpdateItem`, conditioned on `version <` the incoming event's version and touching only the fields an event actually changes, removes the lost-update race on `sequenceStarts` that a read-then-write update would have. `InMemoryCartStateStore` and the in-memory timer store are two objects in one JVM with no failure between them, so the identical write order carries no crash-safety meaning there; it is simply inherited from the shared detector.
+
 ### State machine
 
 Statuses `ACTIVE`, `ABANDONED`, `CLOSED`.
@@ -89,12 +91,14 @@ Three checkpoints, each a cheap read:
 
 The residual window is the gateway round trip. Sends after purchase are counted as a guardrail with a target under 0.01%.
 
+**Production infra adds two more checkpoints.** Before checkpoint 3's reload, the dispatcher checks a per-partition watermark — the newest event time each detector has fully processed and committed, published every poll loop — for the intent's recorded source partition; a lagging partition holds only its own reminders, pausing that slice of the dispatch consumer, so a purchase still sitting in Kafka cannot be missed by a read that runs ahead of it. And where the in-memory dispatcher re-validates lateness against whatever the caller passes at each of the three checkpoints, production stamps one deadline, `sendBy`, into the intent when it is scheduled, and checks it before taking a send token, after the claim, and immediately before the call — a late intent is dropped before it can spend any capacity, not just before it can send. The ledger write at checkpoint 2 also moves: production takes a fenced claim (a token good for one lease, conditioned on the ledger row's current status) at send time, for every attempt including retries, rather than once at scheduling time, so a lease holder that overruns its lease is fenced out rather than risking a double send.
+
 ## 6. Idempotency under at-least-once delivery
 
 | Layer | Mechanism | Demonstrated by |
 |---|---|---|
 | Events | Per-cart version monotonicity. Redelivered or reordered events are ignored and counted. | Verifier 5, 7; `AbandonmentDetectorTest.duplicateAndOutOfOrderEventsAreIgnored` |
-| Timers | Version tag compared on fire. A redelivered timer fails the ledger existence check. | Verifier 6; `ReminderSchedulerTest.staleVersionTimerIsDropped`, `duplicateReminderTimerWritesNothingTwice` |
+| Timers | The Redis upsert only writes if the new `(version, offsetIndex)` pair is greater than what is stored; equal data is a no-op that keeps the current lease. A redelivered or stale timer is dropped when it fires and its version no longer matches the record. | Verifier 6; `ReminderSchedulerTest.staleVersionTimerIsDropped`, `aDuplicateReminderTimerPublishesTheSameKeyAgainForTheDispatcherToDedupe`; production: timer store contract tests for the monotonic upsert |
 | Intents | Ledger key of cart id, version, and offset index, written with a conditional put. | Verifier 6, 8, 10 (one ledger row per key) |
 | Gateway | The same key is the provider idempotency key, so a retry after a timeout does not double send. | Verifier 8, 9 show every attempt and the replay carry the same key. Provider-side dedupe is production design only: the gateway is out of scope and the recording sink does not dedupe. |
 
@@ -104,12 +108,12 @@ A reopened cart has a new version, so its reminders get new keys and are not con
 
 | Failure | Behaviour | Demonstrated by |
 |---|---|---|
-| Transient send failure | Exponential backoff with jitter, bounded attempts. The cart is re-validated before each attempt, so a purchase during backoff stops the retry, and a retry that would land past the reminder's lateness bound is dropped and counted instead of sent. | Verifier 8; `DispatcherTest.transientFailureRetriesWithExponentialBackoffThenSucceedsOnce`, `purchaseDuringBackoffCancelsTheRetry`, `retryLandingAfterTheLatenessBoundIsDroppedNotSent`. Jitter is production design only: the in-memory dispatcher uses fixed doubling so fake-clock times are exact. |
+| Transient send failure | Exponential backoff with full jitter, bounded attempts. The cart is re-validated before each attempt, so a purchase during backoff stops the retry, and a retry that would land past the reminder's lateness bound is dropped and counted instead of sent. | Verifier 8; `DispatcherTest.transientFailureRetriesWithExponentialBackoffThenSucceedsOnce`, `purchaseDuringBackoffCancelsTheRetry`, `aRetryLandingAfterSendByIsSkippedNotSent`. The full-jitter formula, `RETRY_BASE × 2^(attempts−1)` times a fraction in [0, 1], lives once in the shared `Dispatcher`, so replicas retrying together don't resonate in production; only the fraction's source differs by mode — `ThreadLocalRandom` in production, a fixed `1.0` in the in-memory `Pipeline` — which turns the identical formula into exact deterministic doubling for the fake-clock verifier. |
 | Permanent send failure or exhausted retries | Dead letter with reason. Replay re-enqueues under the same key, and the drain re-validates the cart and the lateness bound, so a replay after purchase or past the bound is dropped and a repeated replay sends nothing more. | Verifier 9, 9b, 9c; `DispatcherTest.exhaustedRetriesGoToDeadLetter`, `permanentFailureGoesStraightToDeadLetterAndReplaySendsOnce`, `replayAfterTheLatenessBoundIsDroppedNotSent` |
 | Detector down | Kafka retains events for seven days. The consumer resumes from its committed offset. Reprocessing is idempotent by version. | Idempotent reprocessing: Verifier 5, 7. Retention and offset commits are production design only (no broker in memory). |
-| Timer store loss | The store is derived data. The reconciliation sweeper reinserts missing timers from records and the ledger, starting at the first offset still within its lateness bound, so a restart after an outage does not re-run reminders already skipped. Full rebuild scans the state store or replays the stream. Timers that fire past their lateness bound are skipped and counted rather than sent stale. | Verifier 10, 10b, 11; `PipelineTest.restartWhileActiveRebuildsTheCheckTimer`, `restartWhileAbandonedResumesFromTheLedger`, `restartAfterAllRemindersSchedulesNothing`, `restartAfterEveryReminderWasSkippedRebuildsNothing`, `restartAfterPartialOutageSkipsToTheNextOnTimeOffset`. Rebuild by stream replay is production design only. |
-| Gateway down | Circuit breaker pauses dispatch, the outbox backs up, drain resumes within lateness bounds. | Production design only: the in-memory dispatcher has no breaker. The backlog behaviour it relies on, retries and dropping past the bound, is Verifier 8 and 9b. |
-| Poison event | Schema validation, event dead letter, alert. | Production design only: in-memory events are typed records, so there is no schema to fail. |
+| Timer store loss | Redis holds only rebuildable state — timers and the watermark, never a system of record. The reconciler's periodic sweep reinserts any timer missing from Redis, from the cart record and the ledger's highest sent offset, skipping offsets already past their lateness bound. On top of the sweep, production detects a Redis restart or failover (comparing Redis's `run_id` and replication role against the values it last stored in `recovery-meta`) and replays the last 60 seconds of `cart-events` into timer upserts — the only kind of write a restart or failover can actually lose, since a lost scheduler write is redelivered by its own lease and a lost remove or reconciler write is harmless. | Verifier 10, 10b, 11; `PipelineTest.restartWhileActiveRebuildsTheCheckTimer`, `restartWhileAbandonedResumesFromTheLedger`, `restartAfterAllRemindersSchedulesNothing`, `restartAfterEveryReminderWasSkippedRebuildsNothing`, `restartAfterPartialOutageSkipsToTheNextOnTimeOffset`; production: the Redis-restart test (`RedisRestartIT`) and e2e 6 (`FLUSHALL`) |
+| Gateway down | A circuit breaker wraps the notification sink: over the last 100 send attempts, a transient-failure ratio above 50% opens it for 30 seconds, pausing both lane consumers and the retry loop; one probe send on a half-open breaker decides whether to close it again. | The backlog behaviour behind a paused or open breaker resolves the same way regardless of cause — retries within budget, drop past the lateness bound: Verifier 8 and 9b. In-memory has no breaker of its own. |
+| Poison event | A record that fails to deserialize is classified deterministic: consumers send it to the topic's dead-letter topic and commit past it. The scheduler applies the same deterministic-error handling to a timer whose offset no longer exists after the offset count shrank — acks it and counts `timers.poison` instead of leaving it for lease redelivery — and this half is shared: it runs identically for `Pipeline` and is unit-tested in memory. | `ReminderSchedulerTest.aReminderOffsetOutsideTheConfigIsPoisonAndAcked` (both modes); the deserialize-and-DLQ half has no in-memory analogue, since in-memory events are typed records with no schema to fail. |
 
 ## 8. Capacity
 
@@ -121,13 +125,27 @@ A reopened cart has a new version, so its reminders get new keys and are not con
 | State and timer upserts per second, each | 5,000 | 12,500 |
 | Distinct carts per second | 500 | 1,250 |
 | Carts becoming abandoned per second | 350 | 875 |
-| Reminder sends per second | about 1,000 | about 2,600 |
+| Reminder sends per second | about 945 | about 2,400 (next-day burst) |
 
-Sixty-four partitions keep each under 200 events per second at spike. Redis and DynamoDB absorb 12.5k writes per second each, which a single relational primary would handle only with careful tuning. Abandoned carts keep a timer until their 24 hour reminder, so the in-flight timer set is about 350 per second times 86,400 seconds, roughly 30 million members and about 3 GB, or about 50 MB per shard across 64 shards, which is comfortable and lets sweepers run in parallel. The reconciliation sweep reads only carts that still have a next step: a sparse index of open carts whose last offset has not passed, equivalently records moved to a terminal status or given a TTL after their last offset, so the scan stays bounded by the in-flight set rather than every cart ever seen. The 24 hour reminders for a spike hour land as a burst a day later, so the dispatcher has a rate limiter and a backlog.
+Sixty-four partitions keep each under 200 events per second at spike. Abandoned carts keep a timer until their 24 hour reminder, so the in-flight timer set is about 350 per second times 86,400 seconds, roughly 30 million members and about 3 GB, or about 50 MB per shard across 64 shards, which is comfortable and lets sweepers run in parallel. The reconciliation sweep reads only carts that still have a next step, so the scan stays bounded by the in-flight set rather than every cart ever seen. The 24 hour reminders for a spike hour land as a burst a day later, so the dispatcher has a rate limiter and a backlog.
+
+### Store load (production infra, at the baseline 5k events/s)
+
+| Store | Load | Figure |
+|---|---|---|
+| `carts` base writes | 1 `UpdateItem` per event, plus 2 per abandonment | about 10k WCU/s baseline, about 25k at spike |
+| `carts` GSI writes | only when the open-cart index entry changes | about 1.5k to 2.5k WCU/s baseline; provisioned with headroom, since a throttled GSI back-pressures the base table |
+| `carts` reads | consistent `GetItem` per timer fire and per dispatch attempt | about 3k to 6k RCU/s |
+| `send-ledger` | claim + GSI insert + finish + GSI delete per reminder, plus failed conditional claims from competing retry pollers | about 3.8k WCU/s baseline, about 9.6k in the next-day burst |
+| Redis | one script per event plus claims, acks, and watermark reads and writes | about 8k to 18k ops/s across the cluster; about 5 to 6 GB for about 28 to 32M timers |
+| Reconciler sweep | the sparse open-cart index holds in-flight carts only | about 800 RCU/s at the default 5 minute interval; about 30 to 80 s per sweep |
+| Failover replay | re-reads the last 60 s of `cart-events`, only after a Redis restart or failover | at most about 750k Redis upserts, no DynamoDB reads |
+
+On-demand capacity absorbs about 2x the previous peak instantly; the 2.5x spike needs warm throughput or provisioned capacity set in advance.
 
 ## 9. Behaviour under load spikes
 
-Delay, never drop events, never reject upstream. The pipeline is off the checkout path, so cart events are always accepted. Kafka absorbs the burst, detectors autoscale on consumer lag, sweepers pull bounded batches, and the dispatcher rate limits to the gateway. Two priority lanes keep 30 minute reminders ahead of 24 hour ones, because a fresh reminder recovers more revenue than a stale one; this is production design only, the in-memory dispatcher drains in due order. If the backlog grows past the lateness bounds, reminders are skipped and counted rather than sent late, so an extreme spike degrades into fewer reminders instead of a flood of stale ones.
+Delay, never drop events, never reject upstream. The pipeline is off the checkout path, so cart events are always accepted. Kafka absorbs the burst, detectors autoscale on consumer lag, sweepers pull bounded batches, and the dispatcher rate limits to the gateway. Two Kafka topics carry the priority lanes, split by `offsetIndex < FAST_OFFSETS` (by default the 30 minute and 1 hour offsets are fast, the 24 hour offset is slow), consumed by separate dispatcher threads sharing one token bucket per replica: the fast lane takes any available token, the slow lane only while more than `FAST_RESERVE` (default 30%) of the bucket remains — so the next-day burst can never strand capacity the fast lane could use, and can never starve it either. In-memory still drains in due order: there is only one process and one thread, so lane priority has nothing to arbitrate. If the backlog grows past the lateness bounds, reminders are skipped and counted rather than sent late, so an extreme spike degrades into fewer reminders instead of a flood of stale ones.
 
 ## 10. Secondary topics
 
@@ -135,21 +153,27 @@ Delay, never drop events, never reject upstream. The pipeline is off the checkou
 
 **Experimentation.** Arms cover timing, meaning alternate offset sets resolved at scheduling time, and message variants resolved at dispatch time. Assignment unit is the shopper key, fixed on the cart record for the cart's life. Trade-off: user id gives a consistent experience across devices and clean attribution but covers only logged-in shoppers, while session id covers everyone but one person can land in several arms across sessions and attribution to a session is noisier. Recommendation: user id when available, session id otherwise, and report the two populations separately.
 
-**Personalization.** The intent carries first name and item snapshot. The dispatcher refreshes the snapshot from the Cart Service at send time, so prices and stock are current, and falls back to the stored snapshot if that call fails.
+**Personalization.** The intent carries no items or name, only the identifiers needed to gate and dedupe. The dispatcher builds the message from its consistent cart read, taken right before sending — the same read that re-validates the cart is still abandoned — so first name and the item snapshot are always as current as the cart record, with no separate refresh call and nothing to fall back to if one had failed.
 
 ## 11. The runnable pipeline
 
 Java 21, Gradle, no runtime dependencies. `./gradlew test` runs the fake-clock verifier, `./gradlew run` prints a scripted timeline.
 
-| Interface | In-memory adapter | Production backing |
+| Interface | In-memory adapter | Infra adapter |
 |---|---|---|
-| `Clock` | `FakeClock`, moves forward only | System clock |
-| `CartStateStore` | `InMemoryCartStateStore`, conditional put on version | DynamoDB, conditional write |
-| `TimerStore` | `PriorityQueueTimerStore`, upsert by cart id | Redis sorted set per shard, `ZADD` replaces |
-| `SendLedger` | `InMemorySendLedger` | DynamoDB conditional put on the key |
-| `Outbox` | `InMemoryOutbox` | Same table as the ledger, written in one transaction |
-| `NotificationSink` | `RecordingNotificationSink`, never sends, scriptable failures | Notification gateway client |
-| `DeadLetterQueue` | `InMemoryDeadLetterQueue` | Kafka topic plus replay tool |
+| `Clock` | `FakeClock`, moves forward only | `Instant::now`, wired per role — no dedicated class |
+| `CartStateStore` | `InMemoryCartStateStore`, conditional put on version | DynamoDB `carts` table, field-scoped conditional `UpdateItem`, sparse GSI `open-by-shard` for the reconciler |
+| `TimerStore` | `PriorityQueueTimerStore`, upsert by cart id | Redis sorted set per shard, Lua scripts for the monotonic upsert, claim, release, and ack |
+| `Watermark` | the clock, or the buffered detector's position | Redis hash, one entry per partition, generation-fenced end-offset snapshots |
+| `IntentPublisher` | in-memory queue drained by `Pipeline` | Kafka, two topics split by lane (`reminder-intents-fast` / `reminder-intents-slow`) |
+| `SendLedger` | `InMemorySendLedger` | DynamoDB `send-ledger` table, fenced conditional claim, sparse GSI `retrying-by-shard` for the retry loop |
+| `NotificationSink` | `RecordingNotificationSink`, never sends, scriptable failures | recording sink producing to Kafka `sink-sends`, with an injectable transient-failure rate for load testing |
+| `OutcomeRecorder` | list | Kafka `reminder-outcomes` |
+| `DeadLetterQueue` | `InMemoryDeadLetterQueue` | Kafka `reminder-dlq`, replayed by the `replay` role |
+
+The `Outbox` port and `InMemoryOutbox` no longer exist: dedupe moved from a scheduling-time ledger-plus-outbox transaction to a fenced claim taken by the dispatcher at send time (§5, §6).
+
+**Running the infra build.** `docker compose --env-file demo.env up -d --build` starts Kafka, Redis, and DynamoDB Local plus every role at 2 replicas (1 for the reconciler), against `demo.env`'s compressed timings; `docker compose --env-file demo.env --profile load run --rm -e RATE=50 -e DURATION=PT60S loadgen` drives a load test and writes a report under `build/reports/load/`. Every invariant this section's in-memory tests demonstrate is proven again on real infra: contract tests prove adapter parity directly (the monotonic upsert, conditional remove, claim and lease expiry, watermark generation fencing, ledger claim and takeover), and the infra end-to-end tests — roles running as in-process threads against real containers — prove wiring and failure semantics: idle partitions do not pause the gate, a mid-sequence purchase stops the sequence, duplicate and out-of-order events send exactly once, two schedulers and two dispatchers on shared shards send no duplicates across 200 carts, a partial failure rate dead-letters and replays cleanly, a Redis `FLUSHALL` pauses sending and self-heals, and a stopped detector holds only its own partition's carts. A future per-shopper send cap (rather than per-cart) would add a counter item keyed by shopper, incremented by the scheduler alongside `sequenceStarts` — not a change to any key shown above.
 
 Core classes: `AbandonmentDetector` handles events, `ReminderScheduler` handles timer fires, `Dispatcher` drains the outbox, `Reconciler` rebuilds timers. `Pipeline` wires them and drives the clock. `advanceTo` stops at every timer and retry due time so each fire runs at its own virtual time.
 
@@ -167,3 +191,4 @@ The verifier covers: the default schedule, clock reset on edit, cancellation by 
 - Is the 24 hour reminder subject to quiet hours or local-time delivery windows?
 - Does the frequency cap apply per cart or per shopper across carts?
 - Are discounts ever included in reminders, which would add a margin guardrail?
+- How long does the notification gateway honour an idempotency key? The design's two at-most-once exceptions (§3) both assume it is honoured for at least the longest lateness bound; today that assumption is stood in for by the recording sink and has never been checked against a real gateway.
