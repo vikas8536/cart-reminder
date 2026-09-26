@@ -78,7 +78,9 @@ class LagSamplerTest {
 
         assertTrue(sampler.maxLagByGroup().get(group) >= 5, "lag must reflect the 5 unconsumed records");
         assertEquals(sampler.maxLagByGroup().get(group), sampler.endingLagByGroup().get(group));
-        assertTrue(sampler.maxWatermarkLagMillis() > 0, "no watermark ever published: partition 0 reads as fully lagged");
+        // Fix round 2: a never-published watermark (EPOCH) is flagged as stale, not folded into the ms figure.
+        assertTrue(sampler.watermarkEverStale(), "no watermark ever published: partition 0 must read as stale");
+        assertEquals(0, sampler.maxWatermarkLagMillis(), "a stale-only partition contributes no ms figure");
         assertEquals(2, sampler.maxPastDueBacklog());
 
         sampler.stop();

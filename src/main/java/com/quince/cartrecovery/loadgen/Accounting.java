@@ -5,6 +5,7 @@ import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Resolves observed {@code sink-sends} and {@code reminder-outcomes} rows into the correctness
@@ -38,6 +39,21 @@ public final class Accounting {
         return resolved.values().stream().filter(kind::equals).count();
     }
 
+    /**
+     * Fix round 2: restricts a resolved-outcomes map to only the keys in {@code keys} (typically
+     * {@code Expected.keys(...)}). An outcome on a key that isn't expected — a real-vs-nominal timing
+     * edge at a cycle boundary, say — must never be counted alongside sent/skippedLate/cancelled/dead,
+     * or it silently cancels out a real miss elsewhere in {@link #unexplainedMissing}'s subtraction
+     * without ever being visible in the report.
+     */
+    public static Map<String, String> restrictToKeys(Map<String, String> resolved, Set<String> keys) {
+        Map<String, String> restricted = new HashMap<>();
+        for (Map.Entry<String, String> e : resolved.entrySet()) {
+            if (keys.contains(e.getKey())) restricted.put(e.getKey(), e.getValue());
+        }
+        return restricted;
+    }
+
     /** Sends beyond the first per key: a healthy pipeline has zero. */
     public static long duplicateSends(List<SinkSend> sends) {
         Map<String, Long> perKey = new HashMap<>();
@@ -59,9 +75,17 @@ public final class Accounting {
         return count;
     }
 
-    /** expected - sent - skippedLate - cancelled - dead, per spec §8.5. */
-    public static long unexplainedMissing(long expected, long sent, long skippedLate, long cancelled, long dead) {
-        return expected - sent - skippedLate - cancelled - dead;
+    /**
+     * expected - sent - skippedLate - cancelled - dead - supersededBeforeSend. A deliberate deviation
+     * from spec §8.5's plain formula (controller ruling, E2 fix round 1): a key superseded by a resume
+     * or purchase at or before its own sendBy is a correct non-send with no outcome ever recorded for
+     * it (see {@link MissingBreakdown}), so it is excluded here rather than counted as a failure. A key
+     * superseded only after its sendBy stays inside this total as "missed while lagging" — it should
+     * have gone out, or been explicitly resolved, before the cart moved on, and wasn't.
+     */
+    public static long unexplainedMissing(long expected, long sent, long skippedLate, long cancelled, long dead,
+                                           long supersededBeforeSend) {
+        return expected - sent - skippedLate - cancelled - dead - supersededBeforeSend;
     }
 
     public static double unexplainedMissingRatio(long unexplainedMissing, long expected) {

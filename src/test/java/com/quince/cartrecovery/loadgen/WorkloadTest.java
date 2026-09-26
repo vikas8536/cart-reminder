@@ -28,9 +28,20 @@ class WorkloadTest {
 
     @Test void ratePacedGenerationSizesCartCountFromRateAndDuration() {
         Workload.Result result = Workload.generate(1L, "run3", 100.0, Duration.ofMinutes(1), START, CONFIG);
-        // ~9.5 events per cart, 100 events/s * 60s = 6000 events, so roughly 6000/9.5 ~= 632 carts
-        assertTrue(result.scripts().size() > 500 && result.scripts().size() < 800,
-            "expected several hundred carts, got " + result.scripts().size());
+        // ~5.375 events per cart (see Workload.APPROX_EVENTS_PER_CART), 100 events/s * 60s = 6000 events,
+        // so roughly 6000/5.375 ~= 1116 carts.
+        assertTrue(result.scripts().size() > 1000 && result.scripts().size() < 1250,
+            "expected roughly 1100 carts, got " + result.scripts().size());
+    }
+
+    // Fix round 1, finding 2: a stale APPROX_EVENTS_PER_CART undercounted carts and silently throttled
+    // every "target rate" run to about 57% of the intended event volume. Calibrate the constant against
+    // the generator itself so the two can never drift apart again unnoticed.
+    @Test void averageEventsPerCartMatchesTheCalibratedConstant() {
+        Workload.Result result = Workload.generateCarts(21L, "run8", 5000, Duration.ofMinutes(10), START, CONFIG);
+        double actual = result.events().size() / (double) result.scripts().size();
+        assertTrue(Math.abs(actual - Workload.APPROX_EVENTS_PER_CART) < 0.15,
+            "actual events/cart " + actual + " drifted from the calibrated constant " + Workload.APPROX_EVENTS_PER_CART);
     }
 
     @Test void eventsAreTimeOrdered() {

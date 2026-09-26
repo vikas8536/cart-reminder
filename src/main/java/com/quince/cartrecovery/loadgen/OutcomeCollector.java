@@ -9,6 +9,7 @@ import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
 
@@ -17,6 +18,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -40,6 +42,9 @@ final class OutcomeCollector implements AutoCloseable {
     private final List<OutcomeRow> outcomes = new CopyOnWriteArrayList<>();
     private final List<LatencySample> fastLatencies = new CopyOnWriteArrayList<>();
     private final List<LatencySample> slowLatencies = new CopyOnWriteArrayList<>();
+    /** Fix round 1, finding 3: next-offset-to-read per partition, so a caller can tell when this
+     * collector has caught up to a given end-offset snapshot before the run's results are computed. */
+    private final Map<TopicPartition, Long> positions = new ConcurrentHashMap<>();
     private final AtomicBoolean running = new AtomicBoolean(false);
     private Thread pollThread;
 
@@ -80,6 +85,7 @@ final class OutcomeCollector implements AutoCloseable {
             while (running.get()) {
                 ConsumerRecords<String, byte[]> records = consumer.poll(Duration.ofMillis(500));
                 for (ConsumerRecord<String, byte[]> record : records) {
+                    positions.put(new TopicPartition(record.topic(), record.partition()), record.offset() + 1);
                     if (record.key() == null || !record.key().startsWith(runPrefixWithDelimiter)) continue;
                     try {
                         JsonNode node = JSON.readTree(record.value());
@@ -129,6 +135,7 @@ final class OutcomeCollector implements AutoCloseable {
     List<OutcomeRow> outcomes() { return List.copyOf(outcomes); }
     List<LatencySample> fastLatencies() { return List.copyOf(fastLatencies); }
     List<LatencySample> slowLatencies() { return List.copyOf(slowLatencies); }
+    Map<TopicPartition, Long> positions() { return Map.copyOf(positions); }
 
     @Override public void close() {
         running.set(false);
