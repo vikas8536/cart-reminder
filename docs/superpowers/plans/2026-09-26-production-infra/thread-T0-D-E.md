@@ -74,7 +74,6 @@ repositories {
 sourceSets {
     create("integrationTest") {
         java.srcDir("src/integrationTest/java")
-        resources.srcDir("src/integrationTest/resources")
         compileClasspath += sourceSets["main"].output + sourceSets["test"].output
         runtimeClasspath += sourceSets["main"].output + sourceSets["test"].output
     }
@@ -1576,7 +1575,7 @@ final class LagSampler {
     }
 
     private long lagFor(String group) throws InterruptedException, ExecutionException {
-        Map<TopicPartition, org.apache.kafka.clients.admin.OffsetAndMetadata> committed =
+        Map<TopicPartition, org.apache.kafka.clients.consumer.OffsetAndMetadata> committed =
             admin.listConsumerGroupOffsets(group).partitionsToOffsetAndMetadata().get();
         if (committed.isEmpty()) return 0L;
 
