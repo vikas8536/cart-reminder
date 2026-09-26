@@ -3,7 +3,12 @@ package com.quince.cartrecovery.infra.dynamo;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
@@ -15,6 +20,23 @@ import software.amazon.awssdk.services.dynamodb.model.TimeToLiveStatus;
 @Testcontainers(disabledWithoutDocker = true)
 class DynamoTablesTest {
     private final DynamoDbClient ddb = TestDynamo.client();
+
+    /**
+     * Spec §6.3: no pinning, including inside the SDK. With apache-client (HttpClient 4, whose pool holds a monitor
+     * while it waits for a connection) virtual threads contending for the pool pinned every carrier and the JVM
+     * deadlocked, so this test hung. PinningGuard fails it on any pinning report.
+     */
+    @Test
+    void clientDoesNotPinVirtualThreadsUnderPoolContention() throws Exception {
+        ExecutorService threads = Executors.newVirtualThreadPerTaskExecutor();
+        try (DynamoDbClient small = DynamoTables.client(TestDynamo.endpoint(), 2)) {
+            List<Future<?>> calls = new ArrayList<>();
+            for (int i = 0; i < 64; i++) calls.add(threads.submit(() -> small.listTables()));
+            for (Future<?> f : calls) f.get(30, TimeUnit.SECONDS);
+        } finally {
+            threads.shutdownNow();
+        }
+    }
 
     @Test
     void cartsHasSparseKeysOnlyOpenIndexAndTtl() {

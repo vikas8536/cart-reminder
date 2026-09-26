@@ -33,7 +33,7 @@ dependencies {
     implementation("org.apache.kafka:kafka-clients:4.3.1")
     implementation("io.lettuce:lettuce-core:6.7.1.RELEASE")
     implementation("software.amazon.awssdk:dynamodb")
-    implementation("software.amazon.awssdk:apache-client")
+    implementation("software.amazon.awssdk:apache5-client")
     implementation("com.fasterxml.jackson.core:jackson-databind")
     implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310")
     runtimeOnly("org.slf4j:slf4j-simple:2.0.16")

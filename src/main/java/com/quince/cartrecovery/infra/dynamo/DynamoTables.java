@@ -3,7 +3,7 @@ package com.quince.cartrecovery.infra.dynamo;
 import java.net.URI;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
-import software.amazon.awssdk.http.apache.ApacheHttpClient;
+import software.amazon.awssdk.http.apache5.Apache5HttpClient;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClientBuilder;
@@ -33,13 +33,12 @@ public final class DynamoTables {
     /**
      * maxConnections should match MAX_IN_FLIGHT: the SDK default of 50 caps a JVM near 5k events per second.
      * A non-blank endpoint means DynamoDB Local, which ignores region and credentials.
-     * ApacheHttpClient is deprecated in SDK 2.54 in favour of apache5-client; T0 pins apache-client, so the
-     * warning is suppressed here rather than adding a dependency.
+     * Apache HttpClient 5: the 4.x pool behind apache-client holds monitors while it waits for a connection or
+     * drains a response, which pins virtual threads (spec §6.3 forbids any pinning report).
      */
-    @SuppressWarnings("deprecation")
     public static DynamoDbClient client(String endpoint, int maxConnections) {
         DynamoDbClientBuilder b = DynamoDbClient.builder()
-                .httpClientBuilder(ApacheHttpClient.builder().maxConnections(maxConnections));
+                .httpClientBuilder(Apache5HttpClient.builder().maxConnections(maxConnections));
         if (endpoint != null && !endpoint.isBlank()) {
             b.endpointOverride(URI.create(endpoint))
                     .region(Region.US_EAST_1)
