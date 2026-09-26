@@ -1,0 +1,163 @@
+name: cart-recovery
+
+# Shared by every role (spec §7.1, §7.3). Values interpolate from the shell or --env-file demo.env.
+x-recovery-env: &recovery-env
+  WINDOW: ${WINDOW:-PT30M}
+  OFFSETS: ${OFFSETS:-PT30M,PT1H,PT24H}
+  LATENESS_BOUNDS: ${LATENESS_BOUNDS:-PT5M,PT5M,PT30M}
+  FREQUENCY_CAP: ${FREQUENCY_CAP:-3}
+  FREQUENCY_WINDOW: ${FREQUENCY_WINDOW:-P7D}
+  HOLDOUT_PERCENT: ${HOLDOUT_PERCENT:-10}
+  MAX_SEND_ATTEMPTS: ${MAX_SEND_ATTEMPTS:-5}
+  RETRY_BASE: ${RETRY_BASE:-PT1M}
+  FAST_OFFSETS: ${FAST_OFFSETS:-2}
+  KAFKA_BOOTSTRAP: kafka:9092
+  REDIS_URL: redis://redis:6379
+  DYNAMO_ENDPOINT: http://dynamodb:8000
+  AWS_REGION: us-east-1
+  AWS_ACCESS_KEY_ID: local
+  AWS_SECRET_ACCESS_KEY: local
+  SHARDS: ${SHARDS:-8}
+  PARTITIONS: ${PARTITIONS:-8}
+  REPLICATION_FACTOR: "1"
+  MIN_INSYNC_REPLICAS: "1"
+  LEASE: ${LEASE:-PT90S}
+  GATEWAY_TIMEOUT: ${GATEWAY_TIMEOUT:-PT30S}
+  CLOCK_SKEW: ${CLOCK_SKEW:-PT5S}
+  MAX_SEND_RATE: ${MAX_SEND_RATE:-1000}
+  FAST_RESERVE: ${FAST_RESERVE:-0.3}
+  SEND_FAILURE_RATE: ${SEND_FAILURE_RATE:-0}
+  RECONCILE_INTERVAL: ${RECONCILE_INTERVAL:-PT5M}
+  RETRY_POLL: ${RETRY_POLL:-PT1S}
+  MAX_IN_FLIGHT: ${MAX_IN_FLIGHT:-256}
+  HEALTH_PORT: "8081"
+  JAVA_TOOL_OPTIONS: -Xmx256m -XX:+UseSerialGC
+
+x-app: &app
+  build: .
+  image: cart-recovery:local
+  environment: *recovery-env
+  stop_grace_period: 40s
+
+# Long-running roles: no published ports; health via the JDK server inside the container.
+x-role: &role
+  <<: *app
+  restart: unless-stopped
+  depends_on:
+    init:
+      condition: service_completed_successfully
+  healthcheck:
+    test: ["CMD", "wget", "-qO-", "http://localhost:8081/health"]
+    interval: 10s
+    timeout: 3s
+    retries: 3
+    start_period: 30s
+
+services:
+  kafka:
+    image: apache/kafka:4.3.1
+    environment:
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,HOST://:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    ports:
+      - "127.0.0.1:29092:29092"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 15s
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # -sharedDb on a named volume by default; for load runs:
+  #   DYNAMO_STORAGE=-inMemory docker compose --profile load up -d
+  dynamodb:
+    image: amazon/dynamodb-local:3.3.1
+    user: root   # the image user cannot write a fresh named volume
+    command: -jar DynamoDBLocal.jar -sharedDb ${DYNAMO_STORAGE:--dbPath /home/dynamodblocal/data}
+    volumes:
+      - dynamodb-data:/home/dynamodblocal/data
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  init:
+    <<: *app
+    command: ["--role=init"]
+    restart: "no"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      dynamodb:
+        condition: service_started
+
+  detector:
+    <<: *role
+    command: ["--role=detector"]
+    deploy:
+      replicas: 2
+
+  scheduler:
+    <<: *role
+    command: ["--role=scheduler"]
+    deploy:
+      replicas: 2
+
+  dispatcher:
+    <<: *role
+    command: ["--role=dispatcher"]
+    deploy:
+      replicas: 2
+
+  reconciler:
+    <<: *role
+    command: ["--role=reconciler"]
+    deploy:
+      replicas: 1
+
+  # Load runs: docker compose --profile load run --rm -e RATE=50 -e DURATION=PT60S loadgen
+  # (LoadgenRole takes no CLI args; it reads RATE, DURATION and optional RUN_PREFIX from the environment.)
+  loadgen:
+    <<: *app
+    environment:
+      <<: *recovery-env
+      RATE: ${RATE:-5000}
+      DURATION: ${DURATION:-PT5M}
+    command: ["--role=loadgen"]
+    profiles: ["load"]
+    restart: "no"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    volumes:
+      - ./build/reports/load:/app/build/reports/load
+
+volumes:
+  redis-data:
+  dynamodb-data:
