@@ -69,7 +69,10 @@ public final class RoleInfra {
         env.put("FAST_OFFSETS", "2");
         env.put("LEASE", "PT3S");
         env.put("GATEWAY_TIMEOUT", "PT1S");
-        env.put("CLOCK_SKEW", "PT0.5S");
+        // The detector's watermark trails Redis TIME by one or two poll iterations (spec §5.4); a smaller
+        // skew never lets the dispatcher gate open (controller ruling). C1b's DispatcherRoleIT already
+        // overrides to the same value.
+        env.put("CLOCK_SKEW", "PT2S");
         env.put("MAX_SEND_RATE", "500");
         env.put("FAST_RESERVE", "0.3");
         env.put("SEND_FAILURE_RATE", "0");

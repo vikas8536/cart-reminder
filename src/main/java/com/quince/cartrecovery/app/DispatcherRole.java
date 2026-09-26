@@ -92,7 +92,7 @@ public final class DispatcherRole implements Role {
             new BatchConsumerLoop.Settings(group, List.of(topic), MAX_POLL_RECORDS, Duration.ofMillis(500),
                 config.maxInFlight(), Topics.REMINDER_DLQ),
             new ByteArrayDeserializer(), record -> handleIntent(dispatcher, holds, record),
-            new BatchConsumerLoop.Hooks<>() {}, ctx.producer(), health, metrics);
+            RoleContext.withStuckDetection(new BatchConsumerLoop.Hooks<byte[]>() {}, health), ctx.producer(), health, metrics);
     }
 
     /**
