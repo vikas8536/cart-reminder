@@ -10,7 +10,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Per-partition watermarks in the {@code watermarks} hash (spec §5.2, §5.4): generation-fenced writes, max within a
+ * Per-partition watermarks in the {@code watermarks} hash (spec §5.2, §5.4): generation-fenced writes (a lower generation is accepted only over a stale entry), max within a
  * generation, and a read that treats a missing entry or one silent for {@code staleAfter} as {@link Instant#EPOCH}.
  */
 public final class RedisWatermark implements Watermark {
@@ -35,7 +35,8 @@ public final class RedisWatermark implements Watermark {
     @Override
     public void publish(int partition, long generation, Instant eventTime) {
         scripts.run("wmSet", ScriptOutputType.INTEGER, new String[] {KEY},
-                Integer.toString(partition), Long.toString(generation), Long.toString(eventTime.toEpochMilli()));
+                Integer.toString(partition), Long.toString(generation), Long.toString(eventTime.toEpochMilli()),
+                Long.toString(staleAfterMs));
     }
 
     /** srcPartition -1 (a cart record written before the field existed, or "gate on everything") is the minimum over partitions 0..partitions-1. */

@@ -69,8 +69,12 @@ class LuaScriptsTest {
     }
 
     private long wmSet(int partition, long generation, long eventTime) {
+        return wmSet(partition, generation, eventTime, 5_000);
+    }
+
+    private long wmSet(int partition, long generation, long eventTime, long staleMs) {
         Long r = redis.eval(lua("wmSet"), ScriptOutputType.INTEGER, new String[] {WM},
-                Integer.toString(partition), Long.toString(generation), Long.toString(eventTime));
+                Integer.toString(partition), Long.toString(generation), Long.toString(eventTime), Long.toString(staleMs));
         return r;
     }
 
@@ -219,6 +223,19 @@ class LuaScriptsTest {
 
         assertEquals(1, wmSet(0, 6, 500), "a newer generation overwrites");
         assertEquals("500", wmGet(5_000, 0).get(0));
+    }
+
+    /** Final review finding 1: a consumer-group reset restarts generations low; a stale entry must not fence them forever. */
+    @Test
+    void wmSetAcceptsALowerGenerationOnlyOnceTheStoredEntryIsStale() throws InterruptedException {
+        assertEquals(1, wmSet(0, 50, 9_000, 200));
+        assertEquals(0, wmSet(0, 1, 1_000, 200), "fresh entry: the lower generation is still a zombie");
+        assertEquals("9000", wmGet(200, 0).get(0));
+
+        Thread.sleep(300);
+        assertEquals(1, wmSet(0, 1, 1_000, 200), "stale entry: the reset group's lower generation takes over");
+        assertEquals("1000", wmGet(200, 0).get(0));
+        assertEquals(0, wmSet(0, 0, 5_000, 200), "and is fenced again while it is fresh");
     }
 
     @Test
