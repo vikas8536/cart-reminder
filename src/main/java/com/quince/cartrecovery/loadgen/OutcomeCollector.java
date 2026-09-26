@@ -30,7 +30,9 @@ final class OutcomeCollector implements AutoCloseable {
     private static final ObjectMapper JSON = new ObjectMapper();
 
     private final String bootstrap;
-    private final String runPrefix;
+    /** The workload keys every cart id {@code runPrefix + "-" + i} (see Workload.generateCarts); matching on the
+     * bare prefix would also match another run whose prefix is a leading substring of this one. */
+    private final String runPrefixWithDelimiter;
     private final Map<String, Instant> lastActivityByCartVersion;
     private final List<Duration> offsets;
     private final int fastOffsets;
@@ -44,7 +46,7 @@ final class OutcomeCollector implements AutoCloseable {
     OutcomeCollector(String bootstrap, String runPrefix, Map<String, Instant> lastActivityByCartVersion,
                      List<Duration> offsets, int fastOffsets) {
         this.bootstrap = bootstrap;
-        this.runPrefix = runPrefix;
+        this.runPrefixWithDelimiter = runPrefix + "-";
         this.lastActivityByCartVersion = Map.copyOf(lastActivityByCartVersion);
         this.offsets = List.copyOf(offsets);
         this.fastOffsets = fastOffsets;
@@ -61,6 +63,9 @@ final class OutcomeCollector implements AutoCloseable {
         pollThread.join(Duration.ofSeconds(10).toMillis());
     }
 
+    /** For tests: true once {@code start()} has run and before {@code stop()}'s join completes. */
+    boolean isRunning() { return pollThread != null && pollThread.isAlive(); }
+
     private void pollLoop() {
         Properties props = new Properties();
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrap);
@@ -75,7 +80,7 @@ final class OutcomeCollector implements AutoCloseable {
             while (running.get()) {
                 ConsumerRecords<String, byte[]> records = consumer.poll(Duration.ofMillis(500));
                 for (ConsumerRecord<String, byte[]> record : records) {
-                    if (record.key() == null || !record.key().startsWith(runPrefix)) continue;
+                    if (record.key() == null || !record.key().startsWith(runPrefixWithDelimiter)) continue;
                     try {
                         JsonNode node = JSON.readTree(record.value());
                         if (record.topic().equals(Topics.SINK_SENDS)) handleSinkSend(node);

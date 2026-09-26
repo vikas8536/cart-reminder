@@ -22,6 +22,7 @@ class ReportTest {
             Map.of("detector", 12000L, "dispatcher-fast", 300L),
             Map.of("detector", 0L, "dispatcher-fast", 0L),
             "detector",
+            420, 7,
             Map.of("fast", new Percentiles.Result(800, 1500, 2200, 4000),
                    "slow", new Percentiles.Result(900, 1600, 2400, 500)),
             10000, 9990, 5, 3, 2,
@@ -38,6 +39,8 @@ class ReportTest {
         assertTrue(md.contains("4870.3"));
         assertTrue(md.contains("detector"));
         assertTrue(md.contains("Bottleneck stage: **detector**"));
+        assertTrue(md.contains("Max per-partition watermark lag: 420 ms"));
+        assertTrue(md.contains("Max Redis timer backlog past due: 7"));
         assertTrue(md.contains("fast"));
         assertTrue(md.contains("slow"));
         assertTrue(md.contains("Duplicate sends: **0**"));
