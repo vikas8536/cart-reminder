@@ -1,10 +1,10 @@
 package com.quince.cartrecovery;
 
-import com.quince.cartrecovery.legacy.Pipeline;
-import com.quince.cartrecovery.legacy.inmemory.RecordingNotificationSink;
+import com.quince.cartrecovery.inmemory.RecordingNotificationSink;
 import com.quince.cartrecovery.model.Arm;
 import com.quince.cartrecovery.model.CartEvent;
 import com.quince.cartrecovery.model.CartItem;
+import com.quince.cartrecovery.model.LedgerKey;
 import com.quince.cartrecovery.model.RecoveryConfig;
 import java.time.Duration;
 import java.time.Instant;
@@ -56,7 +56,7 @@ public final class Main {
         for (int i = seen[0]; i < sent.size(); i++) {
             RecordingNotificationSink.Sent s = sent.get(i);
             System.out.printf("   FIRED  %s  cart=%s offset=%d key=%s%n",
-                s.sentAt(), s.intent().cartId(), s.intent().offsetIndex(), s.intent().idempotencyKey());
+                s.sentAt(), s.message().cartId(), LedgerKey.parse(s.message().key()).offsetIndex(), s.message().key());
         }
         if (seen[0] == sent.size()) System.out.println("   (no sends)");
         seen[0] = sent.size();
