@@ -31,6 +31,8 @@ public final class Report {
               .append(s.endingConsumerLagByGroup().getOrDefault(group, 0L)).append(" |\n");
         }
         md.append("\nBottleneck stage: **").append(s.bottleneckStage()).append("**\n\n");
+        md.append("Max per-partition watermark lag: ").append(s.maxWatermarkLagMillis()).append(" ms  \n");
+        md.append("Max Redis timer backlog past due: ").append(s.maxTimerBacklogPastDue()).append("\n\n");
 
         md.append("## Scheduled-to-sent latency by lane (ms, excluding the 30 s warm-up)\n\n");
         md.append("| Lane | p50 | p95 | p99 | samples |\n|---|---|---|---|---|\n");

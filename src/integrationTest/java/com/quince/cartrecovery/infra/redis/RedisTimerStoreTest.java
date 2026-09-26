@@ -129,6 +129,14 @@ class RedisTimerStoreTest {
     }
 
     @Test
+    void pastDueSumsOnlyTimersDueAtOrBeforeNowAcrossShards() {
+        store.upsert(Timer.checkAbandon("past-a", 1, LONG_AGO, 0));
+        store.upsert(Timer.checkAbandon("past-b", 1, LONG_AGO.plusMillis(1), 0));
+        store.upsert(Timer.checkAbandon("future", 1, FAR_FUTURE, 0));
+        assertEquals(2, store.pastDue());
+    }
+
+    @Test
     void reloadsScriptsAfterScriptFlush() {
         TestRedis.sync().scriptFlush();
         assertTrue(store.upsert(Timer.checkAbandon("c", 1, LONG_AGO, 0)));

@@ -13,6 +13,8 @@ public record LoadTestSummary(
     Map<String, Long> maxConsumerLagByGroup,
     Map<String, Long> endingConsumerLagByGroup,
     String bottleneckStage,
+    long maxWatermarkLagMillis,
+    long maxTimerBacklogPastDue,
     Map<String, Percentiles.Result> latencyByLane,
     long expectedSends,
     long sentSends,

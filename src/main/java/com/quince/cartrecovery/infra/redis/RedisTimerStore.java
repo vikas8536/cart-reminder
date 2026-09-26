@@ -7,6 +7,7 @@ import com.quince.cartrecovery.model.Timer;
 import com.quince.cartrecovery.model.TimerKind;
 import com.quince.cartrecovery.ports.TimerStore;
 import io.lettuce.core.KeyValue;
+import io.lettuce.core.Range;
 import io.lettuce.core.RedisFuture;
 import io.lettuce.core.ScriptOutputType;
 import io.lettuce.core.api.StatefulRedisConnection;
@@ -31,6 +32,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 public final class RedisTimerStore implements TimerStore {
     private static final int EXISTING_CHUNK = 500;
 
+    private final RedisCommands<String, String> sync;
     private final RedisAsyncCommands<String, String> async;
     private final RedisScripts scripts;
     private final int shards;
@@ -38,7 +40,7 @@ public final class RedisTimerStore implements TimerStore {
     private final AtomicInteger nextShard = new AtomicInteger();
 
     public RedisTimerStore(StatefulRedisConnection<String, String> connection, int shards, Duration lease) {
-        RedisCommands<String, String> sync = connection.sync();
+        this.sync = connection.sync();
         this.async = connection.async();
         this.scripts = new RedisScripts(sync, "upsert", "claim", "release", "ack", "remove");
         this.shards = shards;
@@ -124,6 +126,17 @@ public final class RedisTimerStore implements TimerStore {
             }
         }
         return found;
+    }
+
+    /** Sum over shards of timers due at or before Redis TIME right now (load test sampling, spec §8.5). */
+    public long pastDue() {
+        long nowMs = redisTime(sync).toEpochMilli();
+        long total = 0;
+        for (int s = 0; s < shards; s++) {
+            Long count = sync.zcount(timersKey(s), Range.create(Double.NEGATIVE_INFINITY, (double) nowMs));
+            total += count == null ? 0 : count;
+        }
+        return total;
     }
 
     static Instant redisTime(RedisCommands<String, String> redis) {
