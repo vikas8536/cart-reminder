@@ -73,7 +73,7 @@ public final class InMemorySendLedger implements SendLedger {
             .sorted(Comparator.comparing((Map.Entry<String, Row> e) -> e.getValue().nextAttemptAt())
                 .thenComparing(Map.Entry::getKey))
             .limit(limit)
-            .map(e -> new DueRetry(e.getKey(), e.getValue().srcPartition()))
+            .map(e -> new DueRetry(e.getKey(), e.getValue().srcPartition(), e.getValue().sendBy()))
             .toList();
     }
 

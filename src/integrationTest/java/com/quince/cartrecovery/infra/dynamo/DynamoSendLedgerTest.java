@@ -18,6 +18,16 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
+import software.amazon.awssdk.services.dynamodb.model.AttributeDefinition;
+import software.amazon.awssdk.services.dynamodb.model.BillingMode;
+import software.amazon.awssdk.services.dynamodb.model.CreateTableRequest;
+import software.amazon.awssdk.services.dynamodb.model.GlobalSecondaryIndex;
+import software.amazon.awssdk.services.dynamodb.model.KeySchemaElement;
+import software.amazon.awssdk.services.dynamodb.model.KeyType;
+import software.amazon.awssdk.services.dynamodb.model.Projection;
+import software.amazon.awssdk.services.dynamodb.model.ProjectionType;
+import software.amazon.awssdk.services.dynamodb.model.ScalarAttributeType;
+import software.amazon.awssdk.services.dynamodb.waiters.DynamoDbWaiter;
 
 @Testcontainers(disabledWithoutDocker = true)
 class DynamoSendLedgerTest {
@@ -77,7 +87,7 @@ class DynamoSendLedgerTest {
         assertTrue(ledger.markRetry(key, c.token(), next));
 
         assertEquals(List.of(), ledger.dueRetries(shard, next.minusMillis(1), 10));
-        assertEquals(List.of(new DueRetry(key, 4)), ledger.dueRetries(shard, next, 10), "key with ':' and '|' round-trips");
+        assertEquals(List.of(new DueRetry(key, 4, SEND_BY)), ledger.dueRetries(shard, next, 10), "key with ':' and '|' round-trips");
 
         assertEquals(new ClaimResult.NotClaimed("leased"), ledger.claim(key, SEND_BY, 4, next.minusMillis(1)));
         ClaimResult.Claimed again = claimed(key, next);
@@ -91,7 +101,7 @@ class DynamoSendLedgerTest {
         ClaimResult.Claimed c = claimed(key, T);
         int shard = Shards.of("c2", SHARDS);
         assertEquals(List.of(), ledger.dueRetries(shard, c.leaseUntil().minusMillis(1), 10));
-        assertEquals(List.of(new DueRetry(key, 4)), ledger.dueRetries(shard, c.leaseUntil(), 10));
+        assertEquals(List.of(new DueRetry(key, 4, SEND_BY)), ledger.dueRetries(shard, c.leaseUntil(), 10));
     }
 
     @Test
@@ -117,7 +127,7 @@ class DynamoSendLedgerTest {
         Instant replayAt = T.plusSeconds(100);
         assertTrue(ledger.reopen(key, replayAt));
         assertFalse(ledger.reopen(key, replayAt), "already RETRYING; replaying twice is harmless");
-        assertEquals(List.of(new DueRetry(key, 4)), ledger.dueRetries(Shards.of("c4", SHARDS), replayAt, 10));
+        assertEquals(List.of(new DueRetry(key, 4, SEND_BY)), ledger.dueRetries(Shards.of("c4", SHARDS), replayAt, 10));
         ClaimResult.Claimed c3 = claimed(key, replayAt);
         assertEquals(1, c3.attempts());
         assertEquals(SEND_BY, c3.sendBy());
@@ -151,5 +161,41 @@ class DynamoSendLedgerTest {
         String key = key("c6", 1, 0);
         ClaimResult.Claimed c = claimed(key, T);
         assertThrows(IllegalArgumentException.class, () -> ledger.finish(key, c.token(), OutcomeKind.ABANDONED, null));
+    }
+
+    /** Controller ruling F1: a table created before this change projects only srcPartition, not sendBy. */
+    @Test
+    void dueRetriesFailsClearlyWhenTheIndexDoesNotProjectSendBy() {
+        String table = TestDynamo.table("send-ledger-old-projection");
+        ddb.createTable(CreateTableRequest.builder()
+                .tableName(table)
+                .billingMode(BillingMode.PAY_PER_REQUEST)
+                .attributeDefinitions(
+                        AttributeDefinition.builder().attributeName("cartId").attributeType(ScalarAttributeType.S).build(),
+                        AttributeDefinition.builder().attributeName("sk").attributeType(ScalarAttributeType.S).build(),
+                        AttributeDefinition.builder().attributeName("retryShard").attributeType(ScalarAttributeType.S).build(),
+                        AttributeDefinition.builder().attributeName("nextAttemptAt").attributeType(ScalarAttributeType.N).build())
+                .keySchema(
+                        KeySchemaElement.builder().attributeName("cartId").keyType(KeyType.HASH).build(),
+                        KeySchemaElement.builder().attributeName("sk").keyType(KeyType.RANGE).build())
+                .globalSecondaryIndexes(GlobalSecondaryIndex.builder()
+                        .indexName(DynamoTables.RETRYING_BY_SHARD)
+                        .keySchema(
+                                KeySchemaElement.builder().attributeName("retryShard").keyType(KeyType.HASH).build(),
+                                KeySchemaElement.builder().attributeName("nextAttemptAt").keyType(KeyType.RANGE).build())
+                        .projection(Projection.builder().projectionType(ProjectionType.INCLUDE)
+                                .nonKeyAttributes("srcPartition").build())
+                        .build())
+                .build());
+        try (DynamoDbWaiter waiter = ddb.waiter()) {
+            waiter.waitUntilTableExists(b -> b.tableName(table));
+        }
+        DynamoSendLedger oldLedger = new DynamoSendLedger(ddb, table, LEASE, SHARDS);
+        String key = key("old", 1, 0);
+        oldLedger.claim(key, SEND_BY, 4, T);
+
+        IllegalStateException e = assertThrows(IllegalStateException.class,
+                () -> oldLedger.dueRetries(Shards.of("old", SHARDS), T.plus(LEASE), 10));
+        assertEquals("retrying-by-shard index does not project sendBy: recreate the send-ledger table", e.getMessage());
     }
 }

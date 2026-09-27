@@ -37,12 +37,10 @@ import java.util.function.DoubleSupplier;
  * immediately before the send. Only a send keeps its token (review fix 3): a gate hold, a lost claim, a cancel or late
  * skip after the cart re-read, and a lease too short for the gateway each return it. An exception keeps it, so a refund
  * never follows a send. Outcome and dead-letter records are produced before the ledger finish, so a crash in between
- * only duplicates records that consumers already resolve.
+ * only duplicates records that consumers already resolve. A retry row already past its sendBy is claimed and skipped
+ * late with no token and no gate.
  */
 public final class Dispatcher {
-    /** Stands in for sendBy on a retry row that has disappeared: the claim then recreates it already late. */
-    private static final Instant GONE = Instant.EPOCH;
-
     private final RecoveryConfig config;
     private final DispatchConfig dispatch;
     private final CartStateStore store;
@@ -110,11 +108,21 @@ public final class Dispatcher {
     }
 
     /**
-     * One pass of the retry loop over a shard: watermark gate, then a token, then the claim, then steps 5 to 7.
-     * The token is taken before the claim, so the loop never holds a lease while waiting for capacity.
+     * One pass of the retry loop over a shard. A row already past its sendBy is claimed and skipped late with no token
+     * and no gate. An on-time row passes the watermark gate, then takes a token (before the claim, so the loop never
+     * holds a lease while waiting for capacity), then claims and runs steps 5 to 7, returning the token if it does not send.
      */
     public void retryDue(int shard, int limit) {
         for (DueRetry due : ledger.dueRetries(shard, clock.now(), limit)) {
+            if (clock.now().isAfter(due.sendBy())) {
+                ClaimResult claim = ledger.claim(due.key(), due.sendBy(), due.srcPartition(), clock.now());
+                if (claim instanceof ClaimResult.Claimed c) {
+                    skipLate(due.key(), c);
+                } else {
+                    metrics.increment("dispatch.duplicate");
+                }
+                continue;
+            }
             if (lagging(due.srcPartition())) {
                 metrics.increment("dispatch.retry_held");
                 continue;
@@ -125,7 +133,7 @@ public final class Dispatcher {
                 continue;
             }
             metrics.increment("dispatch.token_taken");
-            ClaimResult claim = ledger.claim(due.key(), GONE, due.srcPartition(), clock.now());
+            ClaimResult claim = ledger.claim(due.key(), due.sendBy(), due.srcPartition(), clock.now());
             if (claim instanceof ClaimResult.Claimed c) {
                 if (!attempt(due.key(), c, null)) refund(lane);
             } else {

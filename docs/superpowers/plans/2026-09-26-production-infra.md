@@ -81,7 +81,7 @@ sealed interface ClaimResult {
     record Claimed(String token, int attempts, Instant sendBy, int srcPartition, Instant leaseUntil) implements ClaimResult {}
     record NotClaimed(String reason) implements ClaimResult {}                // "final" or "leased"
 }
-record DueRetry(String key, int srcPartition)
+record DueRetry(String key, int srcPartition, Instant sendBy)   // sendBy: review fixes 2026-09-28; GSI projects it
 sealed interface TimerDecision {
     record Ack() implements TimerDecision {}
     record Release(Duration delay) implements TimerDecision {}
