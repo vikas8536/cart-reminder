@@ -324,6 +324,7 @@ class FakeClockVerifierTest {
 
         assertEquals(List.of(at(min(30))), sentTimes(p));
         assertEquals(Optional.of("CANCELLED"), p.ledger().status("cart-1:1:1"));
+        assertEquals(1, p.tokensTaken(), "every held and cancelled attempt returned its token; only the send kept one");
         assertEquals(1, p.metrics().get("dispatch.cancelled"));
         assertEquals(CartStatus.CLOSED, p.store().get(CART).orElseThrow().status());
     }

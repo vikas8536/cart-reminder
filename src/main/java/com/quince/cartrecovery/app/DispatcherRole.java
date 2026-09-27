@@ -160,7 +160,7 @@ public final class DispatcherRole implements Role {
      * Lane partitions held by the watermark gate (spec §5.4), each with the source partition it waits on. The pause
      * predicate reads only this map (BatchConsumerLoop evaluates it inside poll); the control loop re-checks the
      * watermark every RETRY_POLL and releases partitions whose source caught up. Without this, a held partition is
-     * redelivered every poll timeout and spends a send token each time, since the Dispatcher takes the token first.
+     * redelivered every poll timeout, taking and returning a send token each time (the Dispatcher takes the token first).
      */
     static final class GateHolds {
         private final Map<TopicPartition, Integer> held = new ConcurrentHashMap<>();

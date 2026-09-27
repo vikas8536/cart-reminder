@@ -18,6 +18,7 @@ import com.quince.cartrecovery.inmemory.RecordingNotificationSink;
 import com.quince.cartrecovery.model.CartEvent;
 import com.quince.cartrecovery.model.DispatchConfig;
 import com.quince.cartrecovery.model.HandleResult;
+import com.quince.cartrecovery.model.Lane;
 import com.quince.cartrecovery.model.RecoveryConfig;
 import com.quince.cartrecovery.model.ReminderIntent;
 import com.quince.cartrecovery.model.Timer;
@@ -74,9 +75,12 @@ public final class Pipeline {
         this.timers = new PriorityQueueTimerStore(clock, DISPATCH.lease());
         this.watermark = new InMemoryWatermark(clock);
         this.sink = new RecordingNotificationSink(clock);
-        SendBudget budget = lane -> {
-            tokensTaken++;
-            return true;
+        SendBudget budget = new SendBudget() {
+            @Override public boolean tryAcquire(Lane lane) {
+                tokensTaken++;
+                return true;
+            }
+            @Override public void release(Lane lane) { tokensTaken--; }
         };
         this.detector = new AbandonmentDetector(config, store, timers, arms, metrics);
         this.scheduler = new ReminderScheduler(config, DISPATCH, store, timers, watermark, intents, outcomes, metrics);
@@ -216,6 +220,6 @@ public final class Pipeline {
     public RecordingNotificationSink sink() { return sink; }
     public InMemoryDeadLetterQueue dlq() { return dlq; }
     public Metrics metrics() { return metrics; }
-    /** Send tokens taken from the (unlimited) budget. */
+    /** Send tokens taken from the (unlimited) budget and not returned: one per actual send attempt. */
     public long tokensTaken() { return tokensTaken; }
 }

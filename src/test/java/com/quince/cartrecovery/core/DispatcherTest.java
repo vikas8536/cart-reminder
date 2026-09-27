@@ -57,11 +57,15 @@ class DispatcherTest {
     private InMemoryDeadLetterQueue dlq;
     private Metrics metrics;
     private final List<Lane> tokens = new ArrayList<>();
+    private final List<Lane> refunds = new ArrayList<>();
     private boolean tokensAvailable = true;
-    private final SendBudget budget = lane -> {
-        if (!tokensAvailable) return false;
-        tokens.add(lane);
-        return true;
+    private final SendBudget budget = new SendBudget() {
+        @Override public boolean tryAcquire(Lane lane) {
+            if (!tokensAvailable) return false;
+            tokens.add(lane);
+            return true;
+        }
+        @Override public void release(Lane lane) { refunds.add(lane); }
     };
     private Dispatcher dispatcher;
 
@@ -131,6 +135,8 @@ class DispatcherTest {
         assertEquals(List.of(new Outcome(KEY, CART, 1, Arm.TREATMENT, OutcomeKind.SENT, at(min(30)), 1)), outcomes.all());
         assertEquals(1, metrics.get("dispatch.sent"));
         assertEquals(1, metrics.get("dispatch.duplicate"));
+        assertEquals(List.of(Lane.FAST, Lane.FAST), tokens);
+        assertEquals(List.of(Lane.FAST), refunds, "the duplicate returns its token");
     }
 
     @Test
@@ -143,6 +149,9 @@ class DispatcherTest {
         assertEquals(Optional.of("CANCELLED"), ledger.status(KEY));
         assertEquals(List.of(OutcomeKind.CANCELLED), outcomeKinds());
         assertEquals(1, metrics.get("dispatch.cancelled"));
+        assertEquals(List.of(Lane.FAST), refunds, "a cancel after the cart re-read returns the token");
+        assertEquals(1, metrics.get("dispatch.token_taken"));
+        assertEquals(1, metrics.get("dispatch.token_refunded"));
     }
 
     @Test
@@ -186,6 +195,8 @@ class DispatcherTest {
         assertEquals(0, sink.sent().size());
         assertEquals(Optional.of("CANCELLED"), ledger.status(KEY));
         assertEquals(1, metrics.get("dispatch.cancelled"));
+        assertEquals(List.of(Lane.FAST, Lane.FAST), tokens);
+        assertEquals(List.of(Lane.FAST), refunds, "the cancelled retry returns its token");
     }
 
     @Test
@@ -317,6 +328,7 @@ class DispatcherTest {
         assertEquals(HandleResult.HOLD, dispatcher.handle(intent(0)));
 
         assertEquals(List.of(Lane.FAST), tokens);
+        assertEquals(List.of(Lane.FAST), refunds, "the gate hold returns the token");
         assertEquals(0, ledger.size());
         assertEquals(0, sink.attempts());
         assertEquals(1, metrics.get("dispatch.held"));
@@ -377,6 +389,7 @@ class DispatcherTest {
 
         assertEquals(0, sink.attempts());
         assertEquals(1, metrics.get("dispatch.lease_expiring"));
+        assertEquals(List.of(Lane.FAST), refunds, "a lease too short to send returns the token");
         assertEquals(Optional.of("SENDING"), ledger.status(KEY));
         Instant leaseUntil = at(min(30)).plusSeconds(90);
         assertEquals(Optional.of(leaseUntil), ledger.nextRetryAt());
@@ -428,6 +441,7 @@ class DispatcherTest {
         assertThrows(IllegalStateException.class, () ->
             dispatcher(RecoveryConfig.defaults(), store, ledger, sink, down, dlq, () -> 1.0).handle(intent(0)));
         assertEquals(Optional.of("SENDING"), ledger.status(KEY));
+        assertEquals(List.of(), refunds, "a token is never returned after a send");
 
         moveTo(at(min(30)).plusSeconds(90));
         dispatcher.retryDue(SHARD, 10);
@@ -446,5 +460,29 @@ class DispatcherTest {
 
         assertEquals(Optional.of("SENDING"), ledger.status(KEY));
         assertEquals(List.of(), outcomes.all());
+    }
+
+    @Test
+    void aReminderFoundLateAfterTheCartReadReturnsTheToken() {
+        CartStateStore slowRead = (CartStateStore) Proxy.newProxyInstance(CartStateStore.class.getClassLoader(),
+            new Class<?>[] {CartStateStore.class}, (proxy, method, args) -> {
+                if (method.getName().equals("get")) clock.advance(Duration.ofMinutes(6));
+                return method.invoke(store, args);
+            });
+
+        dispatcher(RecoveryConfig.defaults(), slowRead, ledger, sink, outcomes, dlq, () -> 1.0).handle(intent(0));
+
+        assertEquals(Optional.of("SKIPPED_LATE"), ledger.status(KEY));
+        assertEquals(List.of(Lane.FAST), refunds);
+    }
+
+    @Test
+    void aFailedSendKeepsItsToken() {
+        sink.scriptOutcomes(SendResult.TRANSIENT_FAILURE);
+
+        dispatcher.handle(intent(0));
+
+        assertEquals(List.of(Lane.FAST), tokens);
+        assertEquals(List.of(), refunds);
     }
 }
