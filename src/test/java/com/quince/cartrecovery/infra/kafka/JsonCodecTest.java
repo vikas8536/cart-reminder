@@ -68,6 +68,16 @@ class JsonCodecTest {
     }
 
     @Test
+    void everyOutcomeKindRoundTrips() {
+        for (OutcomeKind kind : OutcomeKind.values()) {
+            Outcome o = kind == OutcomeKind.ABANDONED
+                ? new Outcome(null, "c", 1, Arm.HOLDOUT, kind, T, 0)
+                : new Outcome("c:1:0", "c", 1, Arm.TREATMENT, kind, T, 2);
+            assertEquals(o, JsonCodec.decodeOutcome(JsonCodec.encode(o)), kind.name());
+        }
+    }
+
+    @Test
     void intentOutcomeDeadLetterAndSinkSendRoundTrip() {
         assertEquals(INTENT, JsonCodec.decodeIntent(JsonCodec.encode(INTENT)));
 
