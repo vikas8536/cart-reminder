@@ -91,6 +91,6 @@ public final class Reconciler {
     }
 
     private void rebuilt(Timer timer) {
-        if (timers.upsert(timer)) metrics.increment("reconcile.timers_rebuilt");
+        if (timers.upsert(timer).written()) metrics.increment("reconcile.timers_rebuilt");
     }
 }

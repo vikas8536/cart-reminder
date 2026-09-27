@@ -21,6 +21,7 @@ import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -67,16 +68,22 @@ public final class RedisTimerStore implements TimerStore {
     }
 
     @Override
-    public boolean upsert(Timer t) {
+    public Upsert upsert(Timer t) {
         if (t.version() < 0) throw new IllegalArgumentException("timer version must not be negative: " + t.version());
-        Long written = scripts.run("upsert", ScriptOutputType.INTEGER, keys(t.cartId()), t.cartId(), pack(t),
+        List<Object> r = scripts.run("upsert", ScriptOutputType.MULTI, keys(t.cartId()), t.cartId(), pack(t),
                 Long.toString(t.version()), Integer.toString(t.offsetIndex()), Long.toString(t.dueAt().toEpochMilli()));
-        return written == 1L;
+        return new Upsert((Long) r.get(0) == 1L, displaced(t.cartId(), (String) r.get(1)));
     }
 
     @Override
-    public void remove(String cartId, long version) {
-        scripts.run("remove", ScriptOutputType.INTEGER, keys(cartId), cartId, Long.toString(version));
+    public Optional<Timer> remove(String cartId, long version) {
+        String removed = scripts.run("remove", ScriptOutputType.VALUE, keys(cartId), cartId, Long.toString(version));
+        return displaced(cartId, removed);
+    }
+
+    /** Lua's '' means nothing was displaced; Lettuce may decode it as "" or null. */
+    private static Optional<Timer> displaced(String cartId, String packed) {
+        return packed == null || packed.isEmpty() ? Optional.empty() : Optional.of(unpack(cartId, packed));
     }
 
     /**

@@ -43,10 +43,15 @@ class LuaScriptsTest {
         return kind + "|" + version + "|" + offset + "|" + src + "|" + dueAt;
     }
 
-    private long upsert(String id, String kind, long version, int offset, int src, long dueAt) {
-        Long r = redis.eval(lua("upsert"), ScriptOutputType.INTEGER, new String[] {Z, H},
+    /** [written (Long), previous packed value or ""]; Lettuce may decode Lua's '' as null, which the store treats alike. */
+    private List<Object> upsertRaw(String id, String kind, long version, int offset, int src, long dueAt) {
+        List<Object> r = redis.eval(lua("upsert"), ScriptOutputType.MULTI, new String[] {Z, H},
                 id, packed(kind, version, offset, src, dueAt), Long.toString(version), Integer.toString(offset), Long.toString(dueAt));
-        return r;
+        return List.of(r.get(0), r.get(1) == null ? "" : r.get(1));
+    }
+
+    private long upsert(String id, String kind, long version, int offset, int src, long dueAt) {
+        return (Long) upsertRaw(id, kind, version, offset, src, dueAt).get(0);
     }
 
     private List<Object> claim(int n, long leaseMs) {
@@ -63,9 +68,9 @@ class LuaScriptsTest {
         return r;
     }
 
-    private long remove(String id, long version) {
-        Long r = redis.eval(lua("remove"), ScriptOutputType.INTEGER, new String[] {Z, H}, id, Long.toString(version));
-        return r;
+    private String remove(String id, long version) {
+        String r = redis.eval(lua("remove"), ScriptOutputType.VALUE, new String[] {Z, H}, id, Long.toString(version));
+        return r == null ? "" : r;
     }
 
     private long wmSet(int partition, long generation, long eventTime) {
@@ -187,15 +192,23 @@ class LuaScriptsTest {
     @Test
     void removeOnlyIfStoredVersionIsNotGreater() {
         upsert("c1", "REMINDER", 5, 1, 0, 1_000);
-        assertEquals(0, remove("c1", 4));
+        assertEquals("", remove("c1", 4));
         assertEquals("REMINDER|5|1|0|1000", redis.hget(H, "c1"));
-        assertEquals(1, remove("c1", 5));
+        assertEquals("REMINDER|5|1|0|1000", remove("c1", 5));
         assertNull(redis.hget(H, "c1"));
         assertNull(redis.zscore(Z, "c1"));
 
         upsert("c2", "CHECK_ABANDON", 5, -1, 0, 1_000);
-        assertEquals(1, remove("c2", 9));
-        assertEquals(0, remove("missing", 1));
+        assertEquals("CHECK_ABANDON|5|-1|0|1000", remove("c2", 9));
+        assertEquals("", remove("missing", 1));
+    }
+
+    @Test
+    void upsertReturnsThePreviousPackedValueOnlyWhenItOverwrites() {
+        assertEquals(List.of(1L, ""), upsertRaw("c1", "CHECK_ABANDON", 1, -1, 0, 1_000), "first write");
+        assertEquals(List.of(1L, "CHECK_ABANDON|1|-1|0|1000"), upsertRaw("c1", "REMINDER", 1, 0, 0, 2_000), "overwrite");
+        assertEquals(List.of(0L, ""), upsertRaw("c1", "REMINDER", 1, 0, 0, 2_000), "equal no-op");
+        assertEquals(List.of(0L, ""), upsertRaw("c1", "CHECK_ABANDON", 1, -1, 0, 3_000), "lower no-op");
     }
 
     @Test
