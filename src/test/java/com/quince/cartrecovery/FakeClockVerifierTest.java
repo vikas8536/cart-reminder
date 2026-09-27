@@ -324,6 +324,7 @@ class FakeClockVerifierTest {
 
         assertEquals(List.of(at(min(30))), sentTimes(p));
         assertEquals(Optional.of("CANCELLED"), p.ledger().status("cart-1:1:1"));
+        assertEquals(1, p.netTokensSpent(), "every held and cancelled attempt returned its token; only the send kept one");
         assertEquals(1, p.metrics().get("dispatch.cancelled"));
         assertEquals(CartStatus.CLOSED, p.store().get(CART).orElseThrow().status());
     }
@@ -359,7 +360,7 @@ class FakeClockVerifierTest {
 
         assertEquals(List.of(at(hrs(24)).plus(min(6))), sentTimes(p));
         assertEquals(2, p.metrics().get("dispatch.skipped_late_precheck"));
-        assertEquals(1, p.tokensTaken());
+        assertEquals(1, p.netTokensSpent());
         assertEquals(1, p.ledger().size());
         assertEquals(1, p.sink().attempts());
     }

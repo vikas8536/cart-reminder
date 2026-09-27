@@ -24,9 +24,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
+import java.util.function.IntConsumer;
 import java.util.function.Predicate;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.TopicPartition;
@@ -34,7 +36,7 @@ import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 
 /**
  * Two lane consumers (fast, slow) sharing one token bucket, a breaker-wrapped recording sink, and a control
- * loop that polls the ledger retry index every RETRY_POLL, re-checks gate-held partitions, and re-reads the
+ * loop that runs a retry pass over every shard at once every RETRY_POLL, re-checks gate-held partitions, and re-reads the
  * guardrail switch every 5 s.
  */
 public final class DispatcherRole implements Role {
@@ -143,16 +145,29 @@ public final class DispatcherRole implements Role {
             health.setReady("breaker", open ? "open" : "closed");
             health.setReady("paused", Boolean.toString(metaPaused.get()));
             if (!open && !metaPaused.get()) {
-                int start = ThreadLocalRandom.current().nextInt(config.shards());
-                for (int i = 0; i < config.shards() && running.get(); i++) {
+                retryPass(shard -> dispatcher.retryDue(shard, RETRY_LIMIT), config.shards(), metrics);
+            }
+            if (!RoleContext.sleep(config.retryPoll())) return;
+        }
+    }
+
+    /**
+     * One retry pass (review fix 3): every shard's retryDue at once, one virtual thread each, returning when all have
+     * finished, so a slow shard no longer delays the rest. The Dispatcher has no mutable state of its own. A shard that
+     * throws is counted and does not stop the others.
+     */
+    static void retryPass(IntConsumer retryShard, int shards, Metrics metrics) {
+        try (ExecutorService exec = Executors.newVirtualThreadPerTaskExecutor()) {
+            for (int s = 0; s < shards; s++) {
+                int shard = s;
+                exec.execute(() -> {
                     try {
-                        dispatcher.retryDue((start + i) % config.shards(), RETRY_LIMIT);
+                        retryShard.accept(shard);
                     } catch (RuntimeException e) {
                         metrics.increment("dispatch.retry_error");
                     }
-                }
+                });
             }
-            if (!RoleContext.sleep(config.retryPoll())) return;
         }
     }
 
@@ -160,7 +175,7 @@ public final class DispatcherRole implements Role {
      * Lane partitions held by the watermark gate (spec §5.4), each with the source partition it waits on. The pause
      * predicate reads only this map (BatchConsumerLoop evaluates it inside poll); the control loop re-checks the
      * watermark every RETRY_POLL and releases partitions whose source caught up. Without this, a held partition is
-     * redelivered every poll timeout and spends a send token each time, since the Dispatcher takes the token first.
+     * redelivered every poll timeout, taking and returning a send token each time (the Dispatcher takes the token first).
      */
     static final class GateHolds {
         private final Map<TopicPartition, Integer> held = new ConcurrentHashMap<>();

@@ -11,6 +11,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
@@ -139,13 +140,13 @@ public abstract class TimerStoreContract {
     void upsertOnlyMovesForwardByVersionThenOffset() {
         String id = cart("a");
         Instant due = at(Duration.ofHours(1));
-        assertTrue(store.upsert(Timer.checkAbandon(id, 2, due, 0)));
-        assertFalse(store.upsert(Timer.checkAbandon(id, 1, due, 0)));
-        assertFalse(store.upsert(Timer.reminder(id, 1, 2, due, 0)));
-        assertTrue(store.upsert(Timer.reminder(id, 2, 0, due, 0)));
-        assertFalse(store.upsert(Timer.checkAbandon(id, 2, due, 0)));
-        assertTrue(store.upsert(Timer.reminder(id, 2, 1, due, 0)));
-        assertTrue(store.upsert(Timer.checkAbandon(id, 3, due, 0)));
+        assertTrue(store.upsert(Timer.checkAbandon(id, 2, due, 0)).written());
+        assertFalse(store.upsert(Timer.checkAbandon(id, 1, due, 0)).written());
+        assertFalse(store.upsert(Timer.reminder(id, 1, 2, due, 0)).written());
+        assertTrue(store.upsert(Timer.reminder(id, 2, 0, due, 0)).written());
+        assertFalse(store.upsert(Timer.checkAbandon(id, 2, due, 0)).written());
+        assertTrue(store.upsert(Timer.reminder(id, 2, 1, due, 0)).written());
+        assertTrue(store.upsert(Timer.checkAbandon(id, 3, due, 0)).written());
     }
 
     @Test
@@ -154,7 +155,7 @@ public abstract class TimerStoreContract {
         store.upsert(a);
         claimMine(10);
 
-        assertFalse(store.upsert(a));
+        assertFalse(store.upsert(a).written());
         assertEquals(List.of(), claimMine(10));
     }
 
@@ -163,7 +164,7 @@ public abstract class TimerStoreContract {
         Timer first = Timer.reminder(cart("a"), 1, 0, at(Duration.ofSeconds(-2)), 0);
         store.upsert(first);
 
-        assertFalse(store.upsert(Timer.reminder(cart("a"), 1, 0, at(Duration.ofSeconds(-1)), 7)));
+        assertFalse(store.upsert(Timer.reminder(cart("a"), 1, 0, at(Duration.ofSeconds(-1)), 7)).written());
         assertEquals(List.of(first), claimMine(10));
     }
 
@@ -188,7 +189,7 @@ public abstract class TimerStoreContract {
         store.upsert(Timer.checkAbandon(id, 2, at(Duration.ofHours(1)), 0));
         store.remove(id, 2);
 
-        assertTrue(store.upsert(Timer.checkAbandon(id, 1, at(Duration.ofHours(1)), 0)));
+        assertTrue(store.upsert(Timer.checkAbandon(id, 1, at(Duration.ofHours(1)), 0)).written());
     }
 
     @Test
@@ -207,5 +208,30 @@ public abstract class TimerStoreContract {
         store.upsert(odd);
 
         assertEquals(List.of(odd), claimMine(10));
+    }
+
+    @Test
+    void upsertReportsTheTimerItDisplaced() {
+        String id = cart("x:y|z");
+        Instant due = at(Duration.ofHours(1));
+        Timer check = Timer.checkAbandon(id, 1, due, 2);
+        Timer reminder = Timer.reminder(id, 1, 0, due, 2);
+
+        assertEquals(new TimerStore.Upsert(true, Optional.empty()), store.upsert(check), "first write displaces nothing");
+        assertEquals(new TimerStore.Upsert(true, Optional.of(check)), store.upsert(reminder), "overwrite");
+        assertEquals(new TimerStore.Upsert(false, Optional.empty()), store.upsert(reminder), "equal no-op");
+        assertEquals(new TimerStore.Upsert(false, Optional.empty()), store.upsert(Timer.checkAbandon(id, 1, due, 2)),
+            "lower no-op");
+    }
+
+    @Test
+    void removeReturnsTheTimerItDeleted() {
+        String id = cart("a");
+        Timer t = Timer.reminder(id, 3, 1, at(Duration.ofHours(1)), 5);
+        store.upsert(t);
+
+        assertEquals(Optional.empty(), store.remove(id, 2), "stored version is newer");
+        assertEquals(Optional.of(t), store.remove(id, 3));
+        assertEquals(Optional.empty(), store.remove(id, 3), "nothing left");
     }
 }

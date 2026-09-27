@@ -32,15 +32,15 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.DoubleSupplier;
 
 /**
- * Sends reminders at most once per key. Every attempt, first or retry, takes a send token, passes the watermark
- * gate for the cart's recorded partition, and holds a fenced ledger lease; sendBy is checked before the token,
- * after the claim, and immediately before the send. Outcome and dead-letter records are produced before the
- * ledger finish, so a crash in between only duplicates records that consumers already resolve.
+ * Sends reminders at most once per key. Every attempt takes a send token, passes the watermark gate for the cart's
+ * recorded partition, and holds a fenced ledger lease; sendBy is checked before the token, after the claim, and
+ * immediately before the send. Only a send keeps its token (review fix 3): a gate hold, a lost claim, a cancel or late
+ * skip after the cart re-read, and a lease too short for the gateway each return it. An exception keeps it, so a refund
+ * never follows a send. Outcome and dead-letter records are produced before the ledger finish, so a crash in between
+ * only duplicates records that consumers already resolve. A retry row already past its sendBy is claimed and skipped
+ * late with no token and no gate.
  */
 public final class Dispatcher {
-    /** Stands in for sendBy on a retry row that has disappeared: the claim then recreates it already late. */
-    private static final Instant GONE = Instant.EPOCH;
-
     private final RecoveryConfig config;
     private final DispatchConfig dispatch;
     private final CartStateStore store;
@@ -86,42 +86,58 @@ public final class Dispatcher {
             metrics.increment("dispatch.skipped_late_precheck");
             return HandleResult.DONE;
         }
-        if (!budget.tryAcquire(Lane.of(intent.offsetIndex(), dispatch.fastOffsets()))) {
+        Lane lane = Lane.of(intent.offsetIndex(), dispatch.fastOffsets());
+        if (!budget.tryAcquire(lane)) {
             metrics.increment("dispatch.no_token");
             return HandleResult.HOLD;
         }
+        metrics.increment("dispatch.token_taken");
         if (lagging(intent.srcPartition())) {
+            refund(lane);
             metrics.increment("dispatch.held");
             return HandleResult.HOLD;
         }
         ClaimResult claim = ledger.claim(intent.key(), intent.sendBy(), intent.srcPartition(), clock.now());
         if (claim instanceof ClaimResult.Claimed c) {
-            attempt(intent.key(), c, intent.scheduledFor());
+            if (!attempt(intent.key(), c, intent.scheduledFor())) refund(lane);
         } else {
+            refund(lane);
             metrics.increment("dispatch.duplicate");
         }
         return HandleResult.DONE;
     }
 
     /**
-     * One pass of the retry loop over a shard: watermark gate, then a token, then the claim, then steps 5 to 7.
-     * The token is taken before the claim, so the loop never holds a lease while waiting for capacity.
+     * One pass of the retry loop over a shard. A row already past its sendBy is claimed and skipped late with no token
+     * and no gate. An on-time row passes the watermark gate, then takes a token (before the claim, so the loop never
+     * holds a lease while waiting for capacity), then claims and runs steps 5 to 7, returning the token if it does not send.
      */
     public void retryDue(int shard, int limit) {
         for (DueRetry due : ledger.dueRetries(shard, clock.now(), limit)) {
+            if (clock.now().isAfter(due.sendBy())) {
+                ClaimResult claim = ledger.claim(due.key(), due.sendBy(), due.srcPartition(), clock.now());
+                if (claim instanceof ClaimResult.Claimed c) {
+                    skipLate(due.key(), c);
+                } else {
+                    metrics.increment("dispatch.duplicate");
+                }
+                continue;
+            }
             if (lagging(due.srcPartition())) {
                 metrics.increment("dispatch.retry_held");
                 continue;
             }
-            LedgerKey key = LedgerKey.parse(due.key());
-            if (!budget.tryAcquire(Lane.of(key.offsetIndex(), dispatch.fastOffsets()))) {
+            Lane lane = Lane.of(LedgerKey.parse(due.key()).offsetIndex(), dispatch.fastOffsets());
+            if (!budget.tryAcquire(lane)) {
                 metrics.increment("dispatch.retry_no_token");
                 continue;
             }
-            ClaimResult claim = ledger.claim(due.key(), GONE, due.srcPartition(), clock.now());
+            metrics.increment("dispatch.token_taken");
+            ClaimResult claim = ledger.claim(due.key(), due.sendBy(), due.srcPartition(), clock.now());
             if (claim instanceof ClaimResult.Claimed c) {
-                attempt(due.key(), c, null);
+                if (!attempt(due.key(), c, null)) refund(lane);
             } else {
+                refund(lane);
                 metrics.increment("dispatch.duplicate");
             }
         }
@@ -138,11 +154,14 @@ public final class Dispatcher {
         }
     }
 
-    /** Steps 5 to 7, holding the lease c. scheduledFor is null on the retry path, where it is rebuilt from the cart. */
-    private void attempt(String key, ClaimResult.Claimed c, Instant scheduledFor) {
+    /**
+     * Steps 5 to 7, holding the lease c; true only if the sink was called. scheduledFor is null on the retry path,
+     * where it is rebuilt from the cart.
+     */
+    private boolean attempt(String key, ClaimResult.Claimed c, Instant scheduledFor) {
         if (clock.now().isAfter(c.sendBy())) {
             skipLate(key, c);
-            return;
+            return false;
         }
         LedgerKey k = LedgerKey.parse(key);
         Optional<CartRecord> cart = store.get(k.cartId());
@@ -150,16 +169,16 @@ public final class Dispatcher {
             outcome(key, OutcomeKind.CANCELLED, c.attempts());
             metrics.increment("dispatch.cancelled");
             finish(key, c, OutcomeKind.CANCELLED, "cancelled");
-            return;
+            return false;
         }
         Instant now = clock.now();
         if (now.isAfter(c.sendBy())) {
             skipLate(key, c);
-            return;
+            return false;
         }
         if (Duration.between(now, c.leaseUntil()).compareTo(dispatch.gatewayTimeout()) < 0) {
             metrics.increment("dispatch.lease_expiring");
-            return;
+            return false;
         }
         CartRecord r = cart.get();
         SendResult result = sink.send(new ReminderMessage(key, r.cartId(), r.shopperKey(), r.firstName(), r.items()));
@@ -182,6 +201,13 @@ public final class Dispatcher {
             }
             case PERMANENT_FAILURE -> deadLetter(key, c, r, scheduledFor, "permanent_failure");
         }
+        return true;
+    }
+
+    /** A token taken for this attempt that no send used goes back to the budget. */
+    private void refund(Lane lane) {
+        budget.release(lane);
+        metrics.increment("dispatch.token_refunded");
     }
 
     private void skipLate(String key, ClaimResult.Claimed c) {

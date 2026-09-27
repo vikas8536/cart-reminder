@@ -85,4 +85,23 @@ class AccountingTest {
         assertEquals(0.0, Accounting.unexplainedMissingRatio(0, 0));
         assertEquals(0.02, Accounting.unexplainedMissingRatio(2, 100));
     }
+
+    @Test void supersededRanksBelowEveryOtherKind() {
+        assertEquals("SKIPPED_LATE", Accounting.resolveOutcomes(List.of(
+            new OutcomeRow("k1", "cart-1", 1, "TREATMENT", "SUPERSEDED", T0, 0),
+            new OutcomeRow("k1", "cart-1", 1, "TREATMENT", "SKIPPED_LATE", T0, 1))).get("k1"));
+        assertEquals("CANCELLED", Accounting.resolveOutcomes(List.of(
+            new OutcomeRow("k1", "cart-1", 1, "TREATMENT", "CANCELLED", T0, 1),
+            new OutcomeRow("k1", "cart-1", 1, "TREATMENT", "SUPERSEDED", T0, 0))).get("k1"));
+        assertEquals("SUPERSEDED", Accounting.resolveOutcomes(List.of(
+            new OutcomeRow("k1", "cart-1", 1, "TREATMENT", "SUPERSEDED", T0, 0))).get("k1"));
+    }
+
+    @Test void supersededAtIsTheEarliestSupersededTimePerKey() {
+        Map<String, Instant> at = Accounting.supersededAt(List.of(
+            new OutcomeRow("k1", "cart-1", 1, "TREATMENT", "SUPERSEDED", T0.plusSeconds(5), 0),
+            new OutcomeRow("k1", "cart-1", 1, "TREATMENT", "SUPERSEDED", T0, 0),
+            new OutcomeRow("k2", "cart-2", 1, "TREATMENT", "SENT", T0, 1)));
+        assertEquals(Map.of("k1", T0), at);
+    }
 }

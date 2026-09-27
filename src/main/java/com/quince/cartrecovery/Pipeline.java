@@ -18,6 +18,7 @@ import com.quince.cartrecovery.inmemory.RecordingNotificationSink;
 import com.quince.cartrecovery.model.CartEvent;
 import com.quince.cartrecovery.model.DispatchConfig;
 import com.quince.cartrecovery.model.HandleResult;
+import com.quince.cartrecovery.model.Lane;
 import com.quince.cartrecovery.model.RecoveryConfig;
 import com.quince.cartrecovery.model.ReminderIntent;
 import com.quince.cartrecovery.model.Timer;
@@ -61,7 +62,7 @@ public final class Pipeline {
     private final Dispatcher dispatcher;
     private final Reconciler reconciler;
 
-    private long tokensTaken;
+    private long netTokensSpent;
     private Duration dispatchDelay = Duration.ZERO;
     private boolean stalled;
     private final List<CartEvent> buffered = new ArrayList<>();
@@ -74,15 +75,18 @@ public final class Pipeline {
         this.timers = new PriorityQueueTimerStore(clock, DISPATCH.lease());
         this.watermark = new InMemoryWatermark(clock);
         this.sink = new RecordingNotificationSink(clock);
-        SendBudget budget = lane -> {
-            tokensTaken++;
-            return true;
+        SendBudget budget = new SendBudget() {
+            @Override public boolean tryAcquire(Lane lane) {
+                netTokensSpent++;
+                return true;
+            }
+            @Override public void release(Lane lane) { netTokensSpent--; }
         };
-        this.detector = new AbandonmentDetector(config, store, timers, arms, metrics);
+        this.detector = new AbandonmentDetector(config, store, timers, arms, outcomes, metrics);
         this.scheduler = new ReminderScheduler(config, DISPATCH, store, timers, watermark, intents, outcomes, metrics);
         this.dispatcher = new Dispatcher(config, DISPATCH, store, ledger, watermark, budget, sink, outcomes, dlq,
             clock, metrics, () -> 1.0);
-        this.reconciler = new Reconciler(config, store, timers, ledger, clock, metrics);
+        this.reconciler = new Reconciler(config, store, timers, ledger, outcomes, clock, metrics);
     }
 
     public static Pipeline withDefaults(Instant start) {
@@ -216,6 +220,6 @@ public final class Pipeline {
     public RecordingNotificationSink sink() { return sink; }
     public InMemoryDeadLetterQueue dlq() { return dlq; }
     public Metrics metrics() { return metrics; }
-    /** Send tokens taken from the (unlimited) budget. */
-    public long tokensTaken() { return tokensTaken; }
+    /** Send tokens taken from the (unlimited) budget and not returned: one per actual send attempt. */
+    public long netTokensSpent() { return netTokensSpent; }
 }

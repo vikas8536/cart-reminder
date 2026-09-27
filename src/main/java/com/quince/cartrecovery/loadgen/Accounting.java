@@ -13,11 +13,11 @@ import java.util.Set;
  * caller (the loadgen role) is responsible for reading those rows from Kafka, filtered to its run.
  */
 public final class Accounting {
-    private static final List<String> PRECEDENCE = List.of("SENT", "DEAD", "CANCELLED", "SKIPPED_LATE");
+    private static final List<String> PRECEDENCE = List.of("SENT", "DEAD", "CANCELLED", "SKIPPED_LATE", "SUPERSEDED");
 
     private Accounting() {}
 
-    /** Each key resolves to exactly one kind, by precedence SENT > DEAD > CANCELLED > SKIPPED_LATE. Rows with a null key ({@code ABANDONED}) are dropped. */
+    /** Each key resolves to exactly one kind, by precedence SENT > DEAD > CANCELLED > SKIPPED_LATE > SUPERSEDED. Rows with a null key ({@code ABANDONED}) are dropped. */
     public static Map<String, String> resolveOutcomes(List<OutcomeRow> outcomes) {
         Map<String, String> best = new HashMap<>();
         for (OutcomeRow row : outcomes) {
@@ -76,13 +76,9 @@ public final class Accounting {
     }
 
     /**
-     * expected - sent - skippedLate - cancelled - dead - supersededBeforeSend. A deliberate deviation
-     * from spec §8.5's plain formula (controller ruling, E2 fix round 1): a key superseded by a resume
-     * or purchase at or before its own sendBy is a correct non-send with no outcome ever recorded for
-     * it (see {@link MissingBreakdown}), so it is excluded here rather than counted as a failure. A key
-     * superseded only after its sendBy ("superseded after sendBy") or never superseded yet with no outcome
-     * ("never superseded, no outcome") stays inside this total: it should have gone out, or been explicitly
-     * resolved, and wasn't.
+     * expected - sent - skippedLate - cancelled - dead - supersededBeforeSend. A deliberate deviation from spec §8.5's
+     * plain formula: a key resolved SUPERSEDED at or before its own sendBy is a correct non-send (the cart moved on
+     * first), so it is excluded. A key superseded only after its sendBy, or with no outcome at all, stays inside.
      */
     public static long unexplainedMissing(long expected, long sent, long skippedLate, long cancelled, long dead,
                                            long supersededBeforeSend) {
@@ -91,5 +87,16 @@ public final class Accounting {
 
     public static double unexplainedMissingRatio(long unexplainedMissing, long expected) {
         return expected == 0 ? 0.0 : unexplainedMissing / (double) expected;
+    }
+
+    /** Earliest SUPERSEDED time per key (review fix 2: the detector records one per displaced, owed reminder). */
+    public static Map<String, Instant> supersededAt(List<OutcomeRow> outcomes) {
+        Map<String, Instant> at = new HashMap<>();
+        for (OutcomeRow row : outcomes) {
+            if (row.key() != null && "SUPERSEDED".equals(row.kind())) {
+                at.merge(row.key(), row.at(), (a, b) -> a.isBefore(b) ? a : b);
+            }
+        }
+        return at;
     }
 }

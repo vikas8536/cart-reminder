@@ -127,7 +127,13 @@ public final class DynamoSendLedger implements SendLedger {
                 .limit(limit)
                 .build();
         return ddb.queryPaginator(q).items().stream().limit(limit)
-                .map(row -> new DueRetry(keyOf(row), (int) num(row, "srcPartition")))
+                .map(row -> {
+                    if (!row.containsKey("sendBy")) {
+                        throw new IllegalStateException(
+                                "retrying-by-shard index does not project sendBy: recreate the send-ledger table");
+                    }
+                    return new DueRetry(keyOf(row), (int) num(row, "srcPartition"), instant(row, "sendBy"));
+                })
                 .toList();
     }
 

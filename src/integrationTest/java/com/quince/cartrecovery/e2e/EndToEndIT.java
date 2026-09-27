@@ -44,8 +44,8 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 class EndToEndIT {
     static final Duration WAIT = Duration.ofSeconds(25);
     static final List<CartItem> ITEMS = List.of(new CartItem("SKU-1", "Linen Shirt", 1, 4990));
-    static final List<OutcomeKind> PRECEDENCE =
-        List.of(OutcomeKind.SENT, OutcomeKind.DEAD, OutcomeKind.CANCELLED, OutcomeKind.SKIPPED_LATE);
+    static final List<OutcomeKind> PRECEDENCE = List.of(OutcomeKind.SENT, OutcomeKind.DEAD, OutcomeKind.CANCELLED,
+        OutcomeKind.SKIPPED_LATE, OutcomeKind.SUPERSEDED);
 
     static TopicTail sends;
     static TopicTail outcomes;
@@ -228,6 +228,34 @@ class EndToEndIT {
             return o != null && o.kind() == OutcomeKind.CANCELLED;
         }, WAIT);
         assertEquals(List.of(), sentKeys(cart));
+        // The purchase landed before reminder 0 was due, so its displaced timer owed nothing: no SUPERSEDED at all.
+        assertTrue(rawOutcomes(cart).stream().noneMatch(o -> o.kind() == OutcomeKind.SUPERSEDED), rawOutcomes(cart).toString());
+    }
+
+    // 8. Review fix 2: a purchase after a pending reminder's due time, with no scheduler to fire it, records SUPERSEDED
+    // for that key through DetectorRole and the Kafka outcome recorder, and the key is never sent.
+    @Test
+    void aPurchaseAfterAnUnfiredReminderIsDueRecordsSuperseded() throws Exception {
+        String cart = RoleInfra.prefix("e2e8") + "cart";
+        InfraConfig c = RoleInfra.config(Map.of("OFFSETS", "PT10S,PT13S,PT16S"));
+        start(new DetectorRole(), c);
+        RoleThread scheduler = start(new SchedulerRole(), c);
+        start(new DispatcherRole(), c);
+        Instant t0 = Instant.now();
+        edit(cart, 1, t0);
+        Await.until(() -> abandoned(cart), WAIT);
+        Thread.sleep(1000);   // the scheduler arms reminder 0 right after the ABANDONED outcome
+        stop(scheduler);
+        assertTrue(Instant.now().isBefore(t0.plusSeconds(9)), "scheduler stopped too late: reminder 0 (due +10 s) may have fired");
+        sleepUntil(t0.plusSeconds(11));   // reminder 0 overdue and unfired; reminder 1 (due +13 s) not yet due
+        RoleInfra.produce(new CartEvent.CartPurchased(cart, "shopper-" + cart, 2, Instant.now()));
+        Await.until(() -> rawOutcomes(cart).stream().anyMatch(o -> o.kind() == OutcomeKind.SUPERSEDED), WAIT);
+        List<Outcome> superseded = rawOutcomes(cart).stream().filter(o -> o.kind() == OutcomeKind.SUPERSEDED).toList();
+        assertEquals(List.of(key(cart, 1, 0)), superseded.stream().map(Outcome::key).toList());
+        assertEquals(cart, superseded.get(0).cartId());
+        assertEquals(1, superseded.get(0).version());
+        assertEquals(List.of(), sentKeys(cart));
+        assertTrue(rawOutcomes(cart).stream().noneMatch(o -> o.kind() == OutcomeKind.SENT), rawOutcomes(cart).toString());
     }
 
     private RoleThread start(Role role, InfraConfig config) {
@@ -260,7 +288,7 @@ class EndToEndIT {
         return sends.records(prefix).stream().map(r -> JsonCodec.decodeSinkSend(r.value()).key()).toList();
     }
 
-    /** One outcome per key by precedence SENT > DEAD > CANCELLED > SKIPPED_LATE; ABANDONED has no key. */
+    /** One outcome per key by precedence SENT > DEAD > CANCELLED > SKIPPED_LATE > SUPERSEDED; ABANDONED has no key. */
     private static Map<String, Outcome> resolved(String prefix) {
         Map<String, Outcome> best = new HashMap<>();
         for (var r : outcomes.records(prefix)) {
@@ -269,6 +297,11 @@ class EndToEndIT {
             best.merge(o.key(), o, (a, b) -> PRECEDENCE.indexOf(b.kind()) < PRECEDENCE.indexOf(a.kind()) ? b : a);
         }
         return best;
+    }
+
+    /** Every outcome record for the prefix, before precedence. */
+    private static List<Outcome> rawOutcomes(String prefix) {
+        return outcomes.records(prefix).stream().map(r -> JsonCodec.decodeOutcome(r.value())).toList();
     }
 
     private static boolean abandoned(String cartId) {

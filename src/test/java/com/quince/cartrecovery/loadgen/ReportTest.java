@@ -33,6 +33,7 @@ class ReportTest {
             10000, 9985, 5, 3, 2,
             0, 0,
             4, 1, 2,
+            new MissingBreakdown.Result(5, 0, 3),
             6,
             3, 0.0003,
             finalReadTimedOut,
@@ -45,15 +46,15 @@ class ReportTest {
         assertTrue(md.contains("run-abc123"));
         assertTrue(md.contains("5000.0"));
         assertTrue(md.contains("4870.3"));
-        assertTrue(md.contains("detector"));
         assertTrue(md.contains("Bottleneck stage: **detector**"));
         assertTrue(md.contains("Max per-partition watermark lag: 420 ms"));
         assertTrue(md.contains("Max Redis timer backlog past due: 7"));
-        assertTrue(md.contains("fast"));
-        assertTrue(md.contains("slow"));
+        assertTrue(md.contains("SENT > DEAD > CANCELLED > SKIPPED_LATE > SUPERSEDED"));
+        assertTrue(md.contains("| 10000 | 9985 | 5 | 3 | 2 | 5 |"), "superseded column = before + after sendBy");
         assertTrue(md.contains("Duplicate sends: **0**"));
         assertTrue(md.contains("Post-purchase sends: **0**"));
-        assertTrue(md.contains("Superseded before send"));
+        assertTrue(md.contains("Superseded before sendBy ("));
+        assertTrue(md.contains("excluded from unexplained missing): 4\n"));
         assertTrue(md.contains("Superseded after sendBy (pure lateness"));
         assertTrue(md.contains("sendBy): 1\n"), "supersededAfterSendBy value must render");
         assertTrue(md.contains("Never superseded, no outcome ("));
@@ -61,6 +62,8 @@ class ReportTest {
         assertTrue(md.contains("Outcomes on non-expected keys"));
         assertTrue(md.contains("): 6\n"), "outcomesOnNonExpectedKeys value must render");
         assertTrue(md.contains("never superseded, no outcome): 3 ("));
+        assertTrue(md.contains("Script inference cross-check"));
+        assertTrue(md.contains("superseded before send 5, superseded after sendBy 0, never superseded 3"));
         assertTrue(md.contains("305 s actual publish span"));
         assertTrue(md.contains("nominal DURATION was 300 s"));
         assertTrue(md.contains("Cores: 8"));
@@ -68,18 +71,12 @@ class ReportTest {
         assertTrue(md.contains("loadgen JVM's own max heap"));
     }
 
-    // Fix round 2: an EPOCH watermark read must render as "stale", never as a huge epoch-derived ms figure.
     @Test void aStaleWatermarkRendersAsStaleNotAsAMeaninglessMsFigure() {
-        String md = Report.render(sample(true, false));
-
-        assertTrue(md.contains("stale"), "a stale watermark read must say so, not just show a raw ms number");
+        assertTrue(Report.render(sample(true, false)).contains("stale"));
     }
 
-    // Fix round 2: a timed-out final read must be flagged in the report, not silently reported as final.
     @Test void aTimedOutFinalReadIsFlaggedInTheReport() {
-        String md = Report.render(sample(false, true));
-
-        assertTrue(md.contains("did not reach sink-sends'/reminder-outcomes' end offsets in time"));
+        assertTrue(Report.render(sample(false, true)).contains("did not reach sink-sends'/reminder-outcomes' end offsets in time"));
     }
 
     @Test void writeCreatesATimestampedMarkdownFileUnderTheReportsDir(@TempDir Path tempDir) throws IOException {

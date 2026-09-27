@@ -139,9 +139,9 @@ public abstract class SendLedgerContract {
         ledger.finish(done, d.token(), OutcomeKind.SENT, null);
 
         assertEquals(List.of(), due(sending, s.leaseUntil().minusMillis(1)));
-        assertEquals(List.of(new DueRetry(sending, 3)), due(sending, s.leaseUntil()));
+        assertEquals(List.of(new DueRetry(sending, 3, SEND_BY)), due(sending, s.leaseUntil()));
         assertEquals(List.of(), due(retrying, NOW.plusSeconds(29)));
-        assertEquals(List.of(new DueRetry(retrying, 3)), due(retrying, NOW.plusSeconds(30)));
+        assertEquals(List.of(new DueRetry(retrying, 3, SEND_BY)), due(retrying, NOW.plusSeconds(30)));
         assertEquals(List.of(), due(done, NOW.plus(Duration.ofDays(1))));
     }
 
@@ -164,7 +164,7 @@ public abstract class SendLedgerContract {
 
         List<DueRetry> all = ledger.dueRetries(shard, NOW.plusSeconds(60), 100).stream()
             .filter(d -> d.key().startsWith(prefix)).toList();
-        assertEquals(List.of(new DueRetry(first, 3), new DueRetry(second, 3)), all);
+        assertEquals(List.of(new DueRetry(first, 3, SEND_BY), new DueRetry(second, 3, SEND_BY)), all);
         assertEquals(1, ledger.dueRetries(shard, NOW.plusSeconds(60), 1).size());
     }
 
@@ -178,7 +178,7 @@ public abstract class SendLedgerContract {
 
         assertTrue(ledger.reopen(k, later));
         assertFalse(ledger.reopen(k, later));
-        assertEquals(List.of(new DueRetry(k, 3)), due(k, later));
+        assertEquals(List.of(new DueRetry(k, 3, SEND_BY)), due(k, later));
         assertEquals(1, claimed(k, later).attempts());
         assertFalse(ledger.reopen(key("missing", 1, 0), later));
     }
@@ -210,8 +210,16 @@ public abstract class SendLedgerContract {
         Claimed c = claimed(k, NOW);
         ledger.markRetry(k, c.token(), NOW);
 
-        assertEquals(List.of(new DueRetry(k, 3)), due(k, NOW));
+        assertEquals(List.of(new DueRetry(k, 3, SEND_BY)), due(k, NOW));
         assertEquals(1, ledger.highestOffsetIndex(prefix + "x:1:2", 7));
         assertEquals(-1, ledger.highestOffsetIndex(prefix + "x", 1));
+    }
+
+    @Test
+    void dueRetriesCarryTheStoredSendBy() {
+        String k = key("a", 1, 0);
+        ledger.markRetry(k, claimed(k, NOW).token(), NOW);
+
+        assertEquals(SEND_BY, due(k, NOW).get(0).sendBy());
     }
 }

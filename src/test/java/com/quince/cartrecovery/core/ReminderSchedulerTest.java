@@ -379,4 +379,31 @@ class ReminderSchedulerTest {
         assertThrows(IllegalStateException.class,
             () -> scheduler(RecoveryConfig.defaults(), down).onTimer(check(1)));
     }
+
+    private static RecoveryConfig demoBounds() {
+        return RecoveryConfig.defaults()
+            .withLatenessBounds(List.of(Duration.ofSeconds(20), Duration.ofSeconds(20), Duration.ofSeconds(30)));
+    }
+
+    @Test
+    void theHoldCapIsAQuarterOfTheSmallestLatenessBoundBetweenOneAndSixtySeconds() {
+        assertEquals(Duration.ofSeconds(60), ReminderScheduler.maxHold(RecoveryConfig.defaults()));
+        assertEquals(Duration.ofSeconds(5), ReminderScheduler.maxHold(demoBounds()));
+        assertEquals(Duration.ofSeconds(1), ReminderScheduler.maxHold(RecoveryConfig.defaults()
+            .withLatenessBounds(List.of(Duration.ZERO, Duration.ZERO, Duration.ZERO))));
+    }
+
+    @Test
+    void atDemoBoundsAStaleOrFarBehindWatermarkHoldsFiveSeconds() {
+        ReminderScheduler demo = scheduler(demoBounds(), store);
+        active(1, T0, Arm.TREATMENT, 0);
+        Instant needed = at(min(30)).plusSeconds(5);
+        clock.set(needed);
+
+        assertEquals(new TimerDecision.Release(Duration.ofSeconds(5)), demo.onTimer(check(1)));   // EPOCH
+        watermark.publish(0, 1, needed.minusSeconds(20));
+        assertEquals(new TimerDecision.Release(Duration.ofSeconds(5)), demo.onTimer(check(1)));
+        watermark.publish(0, 1, needed.minusSeconds(3));
+        assertEquals(new TimerDecision.Release(Duration.ofSeconds(3)), demo.onTimer(check(1)));
+    }
 }

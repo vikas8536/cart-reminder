@@ -68,10 +68,10 @@ record ReminderIntent(String key, String cartId, long version, int offsetIndex, 
 record ReminderMessage(String key, String cartId, String shopperKey, String firstName, List<CartItem> items)
 record LedgerKey(String cartId, long version, int offsetIndex)
     // String toString() → "cartId:version:offsetIndex"; static LedgerKey parse(String) parses from the right
-enum OutcomeKind { ABANDONED, SENT, SKIPPED_LATE, CANCELLED, DEAD }
+enum OutcomeKind { ABANDONED, SENT, SKIPPED_LATE, CANCELLED, DEAD, SUPERSEDED }   // SUPERSEDED: review fixes 2026-09-28
 record Outcome(String key, String cartId, long version, Arm arm, OutcomeKind kind, Instant at, int attempts)
     // key null for ABANDONED. arm is meaningful only for ABANDONED (the per-arm denominator); reminder
-    // outcomes (SENT, SKIPPED_LATE, CANCELLED, DEAD) always carry Arm.TREATMENT, since only treatment carts get intents.
+    // outcomes (SENT, SKIPPED_LATE, CANCELLED, DEAD, SUPERSEDED) always carry Arm.TREATMENT, since only treatment carts get intents.
 record DeadLetter(ReminderIntent intent, String reason, Instant at)          // REASON_POISON = "poison"
 enum Lane { FAST, SLOW; static Lane of(int offsetIndex, int fastOffsets) }   // offsetIndex < fastOffsets → FAST
 record DispatchConfig(Duration lease, Duration gatewayTimeout, Duration clockSkew, int fastOffsets)
@@ -81,7 +81,7 @@ sealed interface ClaimResult {
     record Claimed(String token, int attempts, Instant sendBy, int srcPartition, Instant leaseUntil) implements ClaimResult {}
     record NotClaimed(String reason) implements ClaimResult {}                // "final" or "leased"
 }
-record DueRetry(String key, int srcPartition)
+record DueRetry(String key, int srcPartition, Instant sendBy)   // sendBy: review fixes 2026-09-28; GSI projects it
 sealed interface TimerDecision {
     record Ack() implements TimerDecision {}
     record Release(Duration delay) implements TimerDecision {}
@@ -105,8 +105,9 @@ interface CartStateStore {
     Stream<String> openCartIds(int shard, Instant now);                                  // carts with a next step, openUntil >= now
 }
 interface TimerStore {
-    boolean upsert(Timer timer);                          // only if (version, offsetIndex) greater; equal data is a no-op
-    void remove(String cartId, long version);             // only if stored version <= version
+    record Upsert(boolean written, Optional<Timer> displaced) {}   // displaced: the stored timer the write overwrote
+    Upsert upsert(Timer timer);                           // only if (version, offsetIndex) greater; equal data is a no-op (displaces nothing)
+    Optional<Timer> remove(String cartId, long version);  // only if stored version <= version; returns the removed timer (review fixes 2026-09-28)
     List<Timer> claimDue(int limit);                      // due by the store's time source; leases them
     void release(Timer timer, Duration delay);            // re-due after delay if unchanged
     void ack(Timer timer);                                // remove if unchanged
@@ -129,7 +130,7 @@ interface SendLedger {
 interface NotificationSink { SendResult send(ReminderMessage message); }
 interface OutcomeRecorder { void record(Outcome outcome); }
 interface DeadLetterQueue { void add(DeadLetter letter); }
-interface SendBudget { boolean tryAcquire(Lane lane); }                                  // never blocks
+interface SendBudget { boolean tryAcquire(Lane lane); void release(Lane lane); }        // never blocks; release returns an unused token, capped at capacity (review fixes 2026-09-28)
 ```
 
 `Outbox` is deleted.
@@ -139,7 +140,7 @@ interface SendBudget { boolean tryAcquire(Lane lane); }                         
 ```java
 Metrics                    // unchanged API: increment(String), get(String), snapshot(); thread-safe after A1
 ReminderPolicy(RecoveryConfig)                          boolean eligible(CartRecord, Instant now)   // unchanged
-AbandonmentDetector(RecoveryConfig, CartStateStore, TimerStore, ArmAssigner, Metrics)
+AbandonmentDetector(RecoveryConfig, CartStateStore, TimerStore, ArmAssigner, OutcomeRecorder, Metrics)
                                                         void handle(CartEvent event, int srcPartition)
 ReminderScheduler(RecoveryConfig, DispatchConfig, CartStateStore, TimerStore, Watermark,
                   IntentPublisher, OutcomeRecorder, Metrics)
@@ -149,7 +150,7 @@ Dispatcher(RecoveryConfig, DispatchConfig, CartStateStore, SendLedger, Watermark
                                                         HandleResult handle(ReminderIntent intent)
                                                         void retryDue(int shard, int limit)
                                                         void replay(List<DeadLetter> letters)
-Reconciler(RecoveryConfig, CartStateStore, TimerStore, SendLedger, Clock, Metrics)
+Reconciler(RecoveryConfig, CartStateStore, TimerStore, SendLedger, OutcomeRecorder, Clock, Metrics)
                                                         void reconcileShard(int shard)
 ```
 

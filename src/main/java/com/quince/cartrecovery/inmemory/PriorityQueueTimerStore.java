@@ -36,16 +36,18 @@ public final class PriorityQueueTimerStore implements TimerStore {
         this.lease = lease;
     }
 
-    @Override public synchronized boolean upsert(Timer timer) {
+    @Override public synchronized Upsert upsert(Timer timer) {
         Slot current = live.get(timer.cartId());
-        if (current != null && !greater(timer, current.timer())) return false;
+        if (current != null && !greater(timer, current.timer())) return new Upsert(false, Optional.empty());
         put(new Slot(timer, timer.dueAt()));
-        return true;
+        return new Upsert(true, Optional.ofNullable(current).map(Slot::timer));
     }
 
-    @Override public synchronized void remove(String cartId, long version) {
+    @Override public synchronized Optional<Timer> remove(String cartId, long version) {
         Slot current = live.get(cartId);
-        if (current != null && current.timer().version() <= version) live.remove(cartId);
+        if (current == null || current.timer().version() > version) return Optional.empty();
+        live.remove(cartId);
+        return Optional.of(current.timer());
     }
 
     @Override public synchronized List<Timer> claimDue(int limit) {

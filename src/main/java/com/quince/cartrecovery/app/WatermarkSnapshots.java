@@ -4,48 +4,58 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import org.apache.kafka.common.TopicPartition;
 
 /**
- * The detector's latest end-offset snapshots (spec §5.4). A snapshot (T, E) says every record appended
- * to partition p before Redis time T lies below offset E[p]; once the committed position reaches E[p],
- * the watermark for p may be set to T. A snapshot older than {@code maxAge} (by the caller's nanoTime at
- * capture) no longer counts, so a detector that cannot take new snapshots stops writing and its entry goes
- * stale. Used by the poll thread only.
+ * The detector's end-offset snapshots (spec §5.4, review fix 1). A snapshot (T, E) says every record appended to
+ * partition p before Redis time T lies below offset E[p]; once the committed position reaches E[p], the watermark
+ * for p may be set to T. Two rings, newest first: dense holds the latest {@code dense} snapshots (one per 250 ms
+ * attempt), and sparse holds the first snapshot of each Redis-time second. Both drop snapshots older than
+ * {@code history} before the newest. Nothing ages out while no snapshot arrives, so a detector cut off from the
+ * broker keeps satisfying from what it has. Poll thread only.
  */
 final class WatermarkSnapshots {
-    private record Snapshot(Instant time, Map<TopicPartition, Long> ends, long capturedNanos) {}
+    private record Snapshot(Instant time, Map<TopicPartition, Long> ends) {}
 
-    private final int keep;
-    private final long maxAgeNanos;
-    private final Deque<Snapshot> newestFirst = new ArrayDeque<>();
+    private final int dense;
+    private final Duration history;
+    private final Deque<Snapshot> denseRing = new ArrayDeque<>();
+    private final Deque<Snapshot> sparseRing = new ArrayDeque<>();
 
-    WatermarkSnapshots(int keep, Duration maxAge) {
-        if (keep < 1) throw new IllegalArgumentException("keep must be >= 1");
-        this.keep = keep;
-        this.maxAgeNanos = maxAge.toNanos();
+    WatermarkSnapshots(int dense, Duration history) {
+        if (dense < 1) throw new IllegalArgumentException("dense must be >= 1");
+        this.dense = dense;
+        this.history = history;
     }
 
-    /** {@code capturedNanos}: nanoTime read before T, so the age is never understated. */
-    void add(Instant time, Map<TopicPartition, Long> ends, long capturedNanos) {
-        newestFirst.addFirst(new Snapshot(time, Map.copyOf(ends), capturedNanos));
-        while (newestFirst.size() > keep) newestFirst.removeLast();
+    void add(Instant time, Map<TopicPartition, Long> ends) {
+        Snapshot s = new Snapshot(time, Map.copyOf(ends));
+        denseRing.addFirst(s);
+        while (denseRing.size() > dense) denseRing.removeLast();
+        Snapshot newestSparse = sparseRing.peekFirst();
+        if (newestSparse == null || time.getEpochSecond() > newestSparse.time().getEpochSecond()) sparseRing.addFirst(s);
+        Instant horizon = time.minus(history);
+        for (Deque<Snapshot> ring : List.of(denseRing, sparseRing)) {
+            while (!ring.isEmpty() && ring.peekLast().time().isBefore(horizon)) ring.removeLast();
+        }
     }
 
-    /** T of the newest snapshot, at most maxAge old, whose end offset for p is at or below committed; empty if none. */
-    Optional<Instant> satisfied(TopicPartition p, long committed, long nowNanos) {
-        for (Snapshot s : newestFirst) {
-            if (nowNanos - s.capturedNanos() > maxAgeNanos) break;   // older ones are older still
-            Long end = s.ends().get(p);
-            if (end != null && committed >= end) return Optional.of(s.time());
+    /** T of the newest retained snapshot, dense first then sparse, whose end offset for p is at or below committed. */
+    Optional<Instant> satisfied(TopicPartition p, long committed) {
+        for (Deque<Snapshot> ring : List.of(denseRing, sparseRing)) {
+            for (Snapshot s : ring) {
+                Long end = s.ends().get(p);
+                if (end != null && committed >= end) return Optional.of(s.time());
+            }
         }
         return Optional.empty();
     }
 
     Optional<Instant> newest() {
-        Snapshot s = newestFirst.peekFirst();
+        Snapshot s = denseRing.peekFirst();
         return s == null ? Optional.empty() : Optional.of(s.time());
     }
 }

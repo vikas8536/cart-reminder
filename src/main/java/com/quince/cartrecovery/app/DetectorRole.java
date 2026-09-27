@@ -7,6 +7,7 @@ import com.quince.cartrecovery.infra.kafka.Topics;
 import com.quince.cartrecovery.inmemory.HashArmAssigner;
 import com.quince.cartrecovery.infra.dynamo.DynamoCartStateStore;
 import com.quince.cartrecovery.infra.kafka.JsonCodec;
+import com.quince.cartrecovery.infra.kafka.KafkaOutcomeRecorder;
 import com.quince.cartrecovery.infra.redis.RedisTimerStore;
 import com.quince.cartrecovery.infra.redis.RedisWatermark;
 import com.quince.cartrecovery.model.CartEvent;
@@ -29,9 +30,11 @@ public final class DetectorRole implements Role {
             AbandonmentDetector detector = new AbandonmentDetector(config.recovery(),
                 new DynamoCartStateStore(ctx.dynamo(), DynamoTables.CARTS, config.recovery(), config.shards()),
                 new RedisTimerStore(ctx.redis(), config.shards(), config.dispatch().lease()),
-                new HashArmAssigner(HashArmAssigner.SALT, config.recovery().holdoutPercent()), metrics);
+                new HashArmAssigner(HashArmAssigner.SALT, config.recovery().holdoutPercent()),
+                new KafkaOutcomeRecorder(ctx.producer()), metrics);
             DetectorWatermarkHooks hooks = new DetectorWatermarkHooks(
-                new RedisWatermark(ctx.redis(), config.partitions()), health, metrics, System::nanoTime);
+                new RedisWatermark(ctx.redis(), config.partitions()), health, metrics, System::nanoTime,
+                DetectorWatermarkHooks.history(config.recovery(), config.dispatch().clockSkew()));
             BatchConsumerLoop<byte[]> loop = new BatchConsumerLoop<>(ctx.consumerProps(GROUP),
                 new BatchConsumerLoop.Settings(GROUP, List.of(Topics.CART_EVENTS), 500, Duration.ofMillis(500),
                     config.maxInFlight(), Topics.CART_EVENTS_DLQ),
