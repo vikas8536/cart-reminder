@@ -1,9 +1,11 @@
 package com.quince.cartrecovery.app;
 
 import com.quince.cartrecovery.core.Metrics;
+import com.quince.cartrecovery.model.RecoveryConfig;
 import com.quince.cartrecovery.ports.Watermark;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -15,13 +17,15 @@ import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
 
 /**
- * Spec §5.4 watermark writes. beforePoll: at most every 250 ms, read Redis TIME as T and then the end
- * offsets E of the assigned partitions (a failed call takes no snapshot). afterCommit, every iteration
- * including empty polls and backoff: for each assigned partition publish T of the newest snapshot whose
- * E[p] is at or below the committed position; write nothing when none is satisfied (/ready then shows
- * {@code watermark.lag_ms.p<n>: stale}).
- * Snapshots older than KEEP x 250 ms (2 s) do not count, so a detector cut off from the broker stops writing
- * and its entries go stale (spec §5.4); the ring is not cleared on a failure, since behind partitions need it. Poll thread only.
+ * Spec §5.4 watermark writes, with review fix 1. beforePoll: at most every 250 ms, read Redis TIME as T and then the
+ * end offsets E of the assigned partitions (a failed call takes no snapshot). afterCommit, every iteration including
+ * empty polls and backoff: for each assigned partition publish T of the newest retained snapshot whose E[p] is at or
+ * below the committed position, however old, so a lagging detector reports "behind by X" instead of going stale.
+ * A detector cut off from the broker keeps republishing its last satisfied time, frozen: both gates hold as they would
+ * on a stale entry, and the lag stays visible (a deliberate deviation from spec §5.4's "goes stale"). Only a partition
+ * behind every retained snapshot, by then past every lateness bound, writes nothing; /ready then shows
+ * {@code watermark.lag_ms.p<n>: stale}. The reported lag is the latest Redis TIME read minus the published time.
+ * Poll thread only.
  */
 final class DetectorWatermarkHooks implements BatchConsumerLoop.Hooks<byte[]> {
     static final Duration SNAPSHOT_INTERVAL = Duration.ofMillis(250);
@@ -32,16 +36,23 @@ final class DetectorWatermarkHooks implements BatchConsumerLoop.Hooks<byte[]> {
     private final Health health;
     private final Metrics metrics;
     private final LongSupplier nanoTime;
-    private final WatermarkSnapshots snapshots = new WatermarkSnapshots(KEEP, SNAPSHOT_INTERVAL.multipliedBy(KEEP));
+    private final WatermarkSnapshots snapshots;
     private final Map<TopicPartition, Long> committed = new HashMap<>();
     private boolean attempted;
     private long lastAttemptNanos;
+    private Instant redisNow;
 
-    DetectorWatermarkHooks(Watermark watermark, Health health, Metrics metrics, LongSupplier nanoTime) {
+    DetectorWatermarkHooks(Watermark watermark, Health health, Metrics metrics, LongSupplier nanoTime, Duration history) {
         this.watermark = watermark;
         this.health = health;
         this.metrics = metrics;
         this.nanoTime = nanoTime;
+        this.snapshots = new WatermarkSnapshots(KEEP, history);
+    }
+
+    /** How far back snapshots are kept: max(latenessBounds) + CLOCK_SKEW. A partition further behind is past every bound. */
+    static Duration history(RecoveryConfig recovery, Duration clockSkew) {
+        return recovery.latenessBounds().stream().max(Comparator.naturalOrder()).orElseThrow().plus(clockSkew);
     }
 
     @Override
@@ -55,29 +66,29 @@ final class DetectorWatermarkHooks implements BatchConsumerLoop.Hooks<byte[]> {
         lastAttemptNanos = now;
         try {
             Instant t = watermark.now();   // T before E: every record appended before T lies below E
-            snapshots.add(t, consumer.endOffsets(assigned, BROKER_TIMEOUT), now);
+            redisNow = t;
+            snapshots.add(t, consumer.endOffsets(assigned, BROKER_TIMEOUT));
         } catch (RuntimeException e) {
-            metrics.increment("watermark.snapshot_failed");   // no snapshot; older ones stay valid
+            metrics.increment("watermark.snapshot_failed");   // no snapshot; the retained ones stay valid
         }
     }
 
     @Override
     public void afterCommit(Consumer<String, byte[]> consumer, Map<TopicPartition, Long> committedNow, int generation) {
         Set<TopicPartition> assigned = consumer.assignment();
-        long nowNanos = nanoTime.getAsLong();
         committedNow.forEach((p, offset) -> {
             if (assigned.contains(p)) committed.merge(p, offset, Math::max);
         });
         for (TopicPartition p : assigned) {
             Long position = committed.get(p);
-            Optional<Instant> t = position == null ? Optional.empty() : snapshots.satisfied(p, position, nowNanos);
-            if (t.isEmpty()) {   // nothing satisfied: write nothing, the entry goes stale after 5 s
+            Optional<Instant> t = position == null ? Optional.empty() : snapshots.satisfied(p, position);
+            if (t.isEmpty()) {   // behind every retained snapshot: write nothing, the entry goes stale after 5 s
                 health.setReady("watermark.lag_ms.p" + p.partition(), "stale");
                 continue;
             }
             try {
                 watermark.publish(p.partition(), generation, t.get());
-                long lagMs = Duration.between(t.get(), snapshots.newest().orElse(t.get())).toMillis();
+                long lagMs = Math.max(0, Duration.between(t.get(), redisNow).toMillis());
                 health.setReady("watermark.lag_ms.p" + p.partition(), Long.toString(lagMs));
             } catch (RuntimeException e) {
                 metrics.increment("watermark.publish_failed");
