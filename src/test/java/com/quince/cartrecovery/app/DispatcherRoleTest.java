@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.quince.cartrecovery.core.Metrics;
 import com.quince.cartrecovery.inmemory.FakeClock;
 import com.quince.cartrecovery.inmemory.InMemoryWatermark;
 import com.quince.cartrecovery.model.Lane;
@@ -12,6 +13,8 @@ import com.quince.cartrecovery.model.SendResult;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Predicate;
@@ -130,6 +133,33 @@ class DispatcherRoleTest {
         watermark.publish(5, 1, now);
         holds.recheck();
         assertFalse(holds.holds(TP));
+    }
+
+    @Test
+    void aRetryPassRunsEveryShardConcurrentlyAndWaitsForAll() {
+        CountDownLatch allStarted = new CountDownLatch(8);
+        Set<Integer> done = ConcurrentHashMap.newKeySet();
+        DispatcherRole.retryPass(shard -> {
+            allStarted.countDown();
+            try {
+                if (allStarted.await(1, TimeUnit.SECONDS)) done.add(shard);   // a serial pass never gets past shard 0 in time
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }, 8, new Metrics());
+        assertEquals(Set.of(0, 1, 2, 3, 4, 5, 6, 7), done);
+    }
+
+    @Test
+    void aFailingShardDoesNotStopTheOthers() {
+        Set<Integer> done = ConcurrentHashMap.newKeySet();
+        Metrics metrics = new Metrics();
+        DispatcherRole.retryPass(shard -> {
+            if (shard == 3) throw new IllegalStateException("dynamo unreachable");
+            done.add(shard);
+        }, 8, metrics);
+        assertEquals(7, done.size());
+        assertEquals(1, metrics.get("dispatch.retry_error"));
     }
 
     @Test

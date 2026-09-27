@@ -5,14 +5,21 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.quince.cartrecovery.Await;
+import com.quince.cartrecovery.core.Metrics;
+import com.quince.cartrecovery.infra.dynamo.DynamoSendLedger;
+import com.quince.cartrecovery.infra.dynamo.DynamoTables;
 import com.quince.cartrecovery.infra.dynamo.RecoveryMetaStore;
 import com.quince.cartrecovery.infra.kafka.JsonCodec;
 import com.quince.cartrecovery.infra.kafka.Topics;
 import com.quince.cartrecovery.infra.redis.RedisWatermark;
 import com.quince.cartrecovery.model.CartEvent;
 import com.quince.cartrecovery.model.CartItem;
+import com.quince.cartrecovery.model.ClaimResult;
 import com.quince.cartrecovery.model.LedgerKey;
+import com.quince.cartrecovery.model.Outcome;
+import com.quince.cartrecovery.model.OutcomeKind;
 import com.quince.cartrecovery.model.ReminderIntent;
+import com.quince.cartrecovery.model.Shards;
 import java.net.ServerSocket;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -20,8 +27,12 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -113,14 +124,56 @@ class DispatcherRoleIT {
             now, now.plusSeconds(60));
         RedisWatermark watermark = new RedisWatermark(RoleInfra.ctx().redis(), c.partitions());
         try (RoleThread dispatcher = new RoleThread(new DispatcherRole(), c)) {
-            RoleInfra.send(Topics.INTENTS_FAST, cart, JsonCodec.encode(intent));
-            Await.until(() -> dispatcher.metrics().get("dispatch.held") >= 1, WAIT);
-            Thread.sleep(3000);   // six poll timeouts: an unpaused partition would be redelivered about six times
-            assertEquals(1, dispatcher.metrics().get("dispatch.held"), "held partition kept consuming tokens");
-            // Catch the source partition up: the partition resumes and the intent completes (no cart, so cancelled).
+            try {
+                RoleInfra.send(Topics.INTENTS_FAST, cart, JsonCodec.encode(intent));
+                Await.until(() -> dispatcher.metrics().get("dispatch.held") >= 1, WAIT);
+                Thread.sleep(3000);   // six poll timeouts: an unpaused partition would be redelivered about six times
+                assertEquals(1, dispatcher.metrics().get("dispatch.held"), "held partition kept being redelivered");
+                Metrics m = dispatcher.metrics();
+                // Every token taken and not refunded must have gone into a real send (dispatcher-fast is shared with
+                // other tests behind auto.offset.reset=earliest, so a stray intent may be sent here too); this still
+                // fails if the held partition itself burns a token that neither refunds nor sends.
+                assertEquals(m.get("dispatch.token_taken") - m.get("dispatch.token_refunded"), m.get("dispatch.sent"),
+                    "every token spent beyond a refund went to a real send");
+            } finally {
+                // Catch the source partition up regardless of the assertions above, so a failure here can't leave
+                // this held intent uncommitted on dispatcher-fast for later test classes sharing that consumer group.
+                Await.until(() -> {
+                    watermark.publish(src, 1, watermark.now());
+                    return dispatcher.metrics().get("dispatch.cancelled") >= 1;
+                }, WAIT);
+            }
+            assertNull(dispatcher.failure());
+        }
+    }
+
+    /** Review fix 3: the retry pass covers every shard; each seeded row is due at once and has no cart, so it cancels. */
+    @Test
+    void dueRetriesOnEveryShardResolve() throws Exception {
+        InfraConfig c = config();
+        String prefix = RoleInfra.prefix("retry");
+        int src = 98;   // a source partition no detector owns; the test keeps its watermark current
+        DynamoSendLedger ledger = new DynamoSendLedger(RoleInfra.ctx().dynamo(), DynamoTables.SEND_LEDGER,
+            c.dispatch().lease(), c.shards());
+        RedisWatermark watermark = new RedisWatermark(RoleInfra.ctx().redis(), c.partitions());
+        Set<Integer> shards = new HashSet<>();
+        List<String> keys = new ArrayList<>();
+        for (int i = 0; shards.size() < c.shards(); i++) {
+            String cart = prefix + i;
+            if (!shards.add(Shards.of(cart, c.shards()))) continue;
+            String key = new LedgerKey(cart, 1, 0).toString();
+            Instant now = Instant.now();
+            ClaimResult.Claimed claimed = (ClaimResult.Claimed) ledger.claim(key, now.plusSeconds(60), src, now);
+            ledger.markRetry(key, claimed.token(), now);
+            keys.add(key);
+        }
+        try (TopicTail outcomes = new TopicTail(RoleInfra.bootstrap(), Topics.OUTCOMES);
+             RoleThread dispatcher = new RoleThread(new DispatcherRole(), c)) {
             Await.until(() -> {
                 watermark.publish(src, 1, watermark.now());
-                return dispatcher.metrics().get("dispatch.cancelled") >= 1;
+                Set<String> cancelled = outcomes.records(prefix).stream().map(r -> JsonCodec.decodeOutcome(r.value()))
+                    .filter(o -> o.kind() == OutcomeKind.CANCELLED).map(Outcome::key).collect(Collectors.toSet());
+                return cancelled.containsAll(keys);
             }, WAIT);
             assertNull(dispatcher.failure());
         }
