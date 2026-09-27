@@ -129,7 +129,7 @@ interface SendLedger {
 interface NotificationSink { SendResult send(ReminderMessage message); }
 interface OutcomeRecorder { void record(Outcome outcome); }
 interface DeadLetterQueue { void add(DeadLetter letter); }
-interface SendBudget { boolean tryAcquire(Lane lane); }                                  // never blocks
+interface SendBudget { boolean tryAcquire(Lane lane); void release(Lane lane); }        // never blocks; release returns an unused token, capped at capacity (review fixes 2026-09-28)
 ```
 
 `Outbox` is deleted.

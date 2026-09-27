@@ -37,6 +37,13 @@ public final class TokenBucket implements SendBudget {
         return ok;
     }
 
+    /** Returns one unused token, capped at capacity (a refund after a refill cannot overfill the bucket). */
+    @Override
+    public synchronized void release(Lane lane) {
+        refill();
+        tokens = Math.min(capacity, tokens + 1);
+    }
+
     /** False while the bucket is at or below the fast reserve: the slow-lane consumer pauses. */
     public synchronized boolean slowAllowed() {
         refill();

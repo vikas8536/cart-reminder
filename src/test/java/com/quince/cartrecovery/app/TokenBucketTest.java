@@ -55,6 +55,18 @@ class TokenBucketTest {
     }
 
     @Test
+    void releaseNeverRaisesTheBucketAboveCapacity() {
+        bucket.release(Lane.FAST);                     // full bucket: stays at 10
+        int n = 0;
+        while (bucket.tryAcquire(Lane.FAST)) n++;
+        assertEquals(10, n);
+
+        bucket.release(Lane.FAST);
+        assertTrue(bucket.tryAcquire(Lane.FAST));
+        assertFalse(bucket.tryAcquire(Lane.FAST));
+    }
+
+    @Test
     void rejectsInvalidSettings() {
         assertThrows(IllegalArgumentException.class, () -> new TokenBucket(0, 0.3, nanos::get));
         assertThrows(IllegalArgumentException.class, () -> new TokenBucket(10, 1.0, nanos::get));
