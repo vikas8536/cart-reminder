@@ -1,11 +1,20 @@
 # Abandoned Cart Recovery
 
-Case study submission: an event-driven detection-and-scheduling pipeline for abandoned-cart reminders, with a fake-clock verifier. No real sends are performed.
+Case study submission: an event-driven detection-and-scheduling pipeline for abandoned-cart reminders. It runs in two modes: in memory against a fake clock (JDK only), or as separately deployable roles on real Kafka, Redis, and DynamoDB (Docker only). No real sends are performed in either mode.
 
 - `DESIGN.md` is the design document.
 - `src/main/java` is the pipeline. `src/test/java/com/quince/cartrecovery/FakeClockVerifierTest.java` is the verifier.
 
 ## Run
+
+Two ways to run the demo:
+
+| Mode | Needs | What it shows | How |
+|---|---|---|---|
+| In-memory | JDK 21 | The whole pipeline in one process against a fake clock: a scripted timeline in seconds, plus the verifier and unit tests | `./gradlew run`, `./gradlew test` (below) |
+| Docker | Docker only, no JDK | Every role as its own container on real Kafka, Redis, and DynamoDB Local, with compressed timings (reminders within minutes), runbook drills, and a load test | `docker compose --env-file demo.env up -d --build` (see [Infra (Docker)](#infra-docker)) |
+
+### In-memory
 
 Requires JDK 21 on `JAVA_HOME`. Gradle is bundled through the wrapper.
 
@@ -35,7 +44,7 @@ The same pipeline also runs as separately deployable roles on real Kafka, Redis,
 
 1. In-memory, no Docker (unchanged): `./gradlew test`, `./gradlew run`.
 2. Infra: `docker compose --env-file demo.env up -d --build`, then `docker compose logs -f` to watch every role come up.
-3. Visible demo: `demo.env` compresses the timings (window 30 s, offsets 30 s / 60 s / 120 s); drive it with `docker compose --env-file demo.env --profile load run --rm -e RATE=50 -e DURATION=PT60S loadgen` and watch reminders land on `sink-sends` within the minute.
+3. Visible demo: `demo.env` compresses the timings (window 30 s, offsets 30 s / 60 s / 120 s); drive it with `docker compose --env-file demo.env --profile load run --rm -e RATE=50 -e DURATION=PT60S loadgen` and watch reminders land on `sink-sends` within the minute. To watch them, in another terminal: `docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server kafka:9092 --topic sink-sends --formatter-property print.key=true` (one line per send: the cart id, then a JSON value whose `key` field is the `cartId:version:offsetIndex` idempotency key; Ctrl-C to stop).
 4. Drills, each with its expected outcome. First, once per shell session: `export COMPOSE_ENV_FILES=demo.env`, so every `docker compose` command below picks up the compressed timings without repeating `--env-file demo.env` on each one (forgetting it on just one command, mid-drill, silently reverts that service to the plain 30 minute/1 hour/24 hour defaults). To stop or kill **one** replica of a scaled service (`detector`, `scheduler`, `dispatcher`), name its container directly — `docker compose stop <svc>` / `docker compose kill <svc>` act on **every** replica of that service, not one:
    - One replica: `docker kill cart-recovery-<svc>-1` (or `docker stop ...` for a graceful stop), then `docker start cart-recovery-<svc>-1` to bring it back.
    - All replicas: `docker compose stop <svc>` / `docker compose start <svc>`.
