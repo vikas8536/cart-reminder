@@ -150,7 +150,7 @@ Dispatcher(RecoveryConfig, DispatchConfig, CartStateStore, SendLedger, Watermark
                                                         HandleResult handle(ReminderIntent intent)
                                                         void retryDue(int shard, int limit)
                                                         void replay(List<DeadLetter> letters)
-Reconciler(RecoveryConfig, CartStateStore, TimerStore, SendLedger, Clock, Metrics)
+Reconciler(RecoveryConfig, CartStateStore, TimerStore, SendLedger, OutcomeRecorder, Clock, Metrics)
                                                         void reconcileShard(int shard)
 ```
 

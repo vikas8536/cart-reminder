@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import com.quince.cartrecovery.inmemory.FakeClock;
 import com.quince.cartrecovery.inmemory.InMemoryCartStateStore;
+import com.quince.cartrecovery.inmemory.InMemoryOutcomeRecorder;
 import com.quince.cartrecovery.inmemory.InMemorySendLedger;
 import com.quince.cartrecovery.inmemory.PriorityQueueTimerStore;
 import com.quince.cartrecovery.model.Arm;
@@ -12,11 +13,13 @@ import com.quince.cartrecovery.model.CartEvent;
 import com.quince.cartrecovery.model.CartRecord;
 import com.quince.cartrecovery.model.ClaimResult;
 import com.quince.cartrecovery.model.LedgerKey;
+import com.quince.cartrecovery.model.Outcome;
 import com.quince.cartrecovery.model.OutcomeKind;
 import com.quince.cartrecovery.model.RecoveryConfig;
 import com.quince.cartrecovery.model.Shards;
 import com.quince.cartrecovery.model.Timer;
 import com.quince.cartrecovery.ports.CartStateStore;
+import com.quince.cartrecovery.ports.TimerStore;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Proxy;
 import java.time.Duration;
@@ -24,6 +27,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.IntStream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -36,6 +40,7 @@ class ReconcilerTest {
     private PriorityQueueTimerStore timers;
     private InMemorySendLedger ledger;
     private Metrics metrics;
+    private InMemoryOutcomeRecorder outcomes;
     private final List<List<String>> loaded = new ArrayList<>();
     private Reconciler reconciler;
 
@@ -46,6 +51,7 @@ class ReconcilerTest {
         timers = new PriorityQueueTimerStore(clock, Duration.ofSeconds(90));
         ledger = new InMemorySendLedger(Duration.ofSeconds(90), SHARDS);
         metrics = new Metrics();
+        outcomes = new InMemoryOutcomeRecorder();
         CartStateStore recording = (CartStateStore) Proxy.newProxyInstance(CartStateStore.class.getClassLoader(),
             new Class<?>[] {CartStateStore.class}, (proxy, method, args) -> {
                 if (method.getName().equals("getAll")) {
@@ -57,7 +63,7 @@ class ReconcilerTest {
                     throw e.getCause();
                 }
             });
-        reconciler = new Reconciler(RecoveryConfig.defaults(), recording, timers, ledger, clock, metrics);
+        reconciler = new Reconciler(RecoveryConfig.defaults(), recording, timers, ledger, outcomes, clock, metrics);
     }
 
     private CartRecord edit(String cartId, int partition) {
@@ -163,5 +169,51 @@ class ReconcilerTest {
 
         assertEquals(List.of(), loaded);
         assertEquals(0, timers.size());
+    }
+
+    private static Outcome skipped(String cartId, int offset, Instant at) {
+        return new Outcome(new LedgerKey(cartId, 1, offset).toString(), cartId, 1, Arm.TREATMENT, OutcomeKind.SKIPPED_LATE, at, 0);
+    }
+
+    @Test
+    void aRebuildThatSkipsLateOffsetsRecordsEachOnceAcrossSweeps() {
+        CartRecord r = edit("a", 1);
+        store.markAbandoned(r, List.of(T0), true);
+        clock.set(at(hrs(3)));
+
+        reconcileAll();
+        reconcileAll();
+
+        assertEquals(List.of(skipped("a", 0, at(hrs(3))), skipped("a", 1, at(hrs(3)))), outcomes.all());
+        assertEquals(2, metrics.get("reconcile.skipped_late"));
+    }
+
+    @Test
+    void anEndedSequenceRecordsItsSkipsOnce() {
+        CartRecord r = edit("a", 0);
+        store.markAbandoned(r, List.of(T0), true);
+        sendRow("a", 0);
+        clock.set(at(hrs(24)).plus(min(31)));
+
+        reconcileAll();
+        reconcileAll();
+
+        assertEquals(List.of(skipped("a", 1, clock.now()), skipped("a", 2, clock.now())), outcomes.all());
+    }
+
+    @Test
+    void aRebuildWhoseUpsertDoesNotWriteRecordsNothing() {
+        CartRecord r = edit("a", 1);
+        store.markAbandoned(r, List.of(T0), true);
+        timers.upsert(Timer.reminder("a", 1, 2, at(hrs(24)), 1));   // another writer rebuilt it first
+        TimerStore blind = (TimerStore) Proxy.newProxyInstance(TimerStore.class.getClassLoader(),
+            new Class<?>[] {TimerStore.class},
+            (proxy, method, args) -> method.getName().equals("existing") ? Set.of() : method.invoke(timers, args));
+        Reconciler racing = new Reconciler(RecoveryConfig.defaults(), store, blind, ledger, outcomes, clock, metrics);
+        clock.set(at(hrs(3)));
+
+        for (int s = 0; s < SHARDS; s++) racing.reconcileShard(s);
+
+        assertEquals(List.of(), outcomes.all());
     }
 }
