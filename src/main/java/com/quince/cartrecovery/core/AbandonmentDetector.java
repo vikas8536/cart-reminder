@@ -82,11 +82,20 @@ public final class AbandonmentDetector {
         }
     }
 
-    /** As the overdue check would have found the cart: still ACTIVE at its version, treatment, within the cap at its due time. */
+    /**
+     * As the overdue check would have found the cart at its version: ACTIVE, or ABANDONED with reminder 0 not yet armed
+     * (the scheduler marks the cart before arming it, and a displaced CHECK means it never did); treatment and within the
+     * cap at its due time. An ABANDONED record already includes this sequence's start, as in the scheduler's re-arm.
+     */
     private boolean sequenceOwed(Timer check) {
-        Optional<CartRecord> cart = store.get(check.cartId());
-        return cart.isPresent() && cart.get().version() == check.version() && cart.get().status() == CartStatus.ACTIVE
-            && policy.eligible(cart.get().abandoned(), check.dueAt());
+        Optional<CartRecord> found = store.get(check.cartId());
+        if (found.isEmpty() || found.get().version() != check.version()) return false;
+        CartRecord cart = found.get();
+        return switch (cart.status()) {
+            case ACTIVE -> policy.eligible(cart.abandoned(), check.dueAt());
+            case ABANDONED -> policy.eligible(cart, check.dueAt());
+            case CLOSED -> false;
+        };
     }
 
     private Timer checkAbandon(CartEvent e, int srcPartition) {
