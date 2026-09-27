@@ -31,7 +31,8 @@ public final class DetectorRole implements Role {
                 new RedisTimerStore(ctx.redis(), config.shards(), config.dispatch().lease()),
                 new HashArmAssigner(HashArmAssigner.SALT, config.recovery().holdoutPercent()), metrics);
             DetectorWatermarkHooks hooks = new DetectorWatermarkHooks(
-                new RedisWatermark(ctx.redis(), config.partitions()), health, metrics, System::nanoTime);
+                new RedisWatermark(ctx.redis(), config.partitions()), health, metrics, System::nanoTime,
+                DetectorWatermarkHooks.history(config.recovery(), config.dispatch().clockSkew()));
             BatchConsumerLoop<byte[]> loop = new BatchConsumerLoop<>(ctx.consumerProps(GROUP),
                 new BatchConsumerLoop.Settings(GROUP, List.of(Topics.CART_EVENTS), 500, Duration.ofMillis(500),
                     config.maxInFlight(), Topics.CART_EVENTS_DLQ),
