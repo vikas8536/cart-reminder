@@ -86,7 +86,7 @@ public final class Pipeline {
         this.scheduler = new ReminderScheduler(config, DISPATCH, store, timers, watermark, intents, outcomes, metrics);
         this.dispatcher = new Dispatcher(config, DISPATCH, store, ledger, watermark, budget, sink, outcomes, dlq,
             clock, metrics, () -> 1.0);
-        this.reconciler = new Reconciler(config, store, timers, ledger, clock, metrics);
+        this.reconciler = new Reconciler(config, store, timers, ledger, outcomes, clock, metrics);
     }
 
     public static Pipeline withDefaults(Instant start) {
