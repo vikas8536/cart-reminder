@@ -285,6 +285,22 @@ class DispatcherTest {
     }
 
     @Test
+    void aLateRetryIsSkippedWithoutATokenOrTheGate() {
+        sink.scriptOutcomes(SendResult.TRANSIENT_FAILURE);
+        dispatcher.handle(intent(0));                  // retry due at 31m, sendBy 35m
+        clock.set(at(min(36)));                        // late, and partition 0's watermark is now stale too
+
+        dispatcher.retryDue(SHARD, 10);
+
+        assertEquals(Optional.of("SKIPPED_LATE"), ledger.status(KEY));
+        assertEquals(List.of(Lane.FAST), tokens, "only the first attempt took a token");
+        assertEquals(List.of(), refunds);
+        assertEquals(0, metrics.get("dispatch.retry_held"));
+        assertEquals(List.of(new Outcome(KEY, CART, 1, Arm.TREATMENT, OutcomeKind.SKIPPED_LATE, at(min(36)), 2)),
+            outcomes.all());
+    }
+
+    @Test
     void sendByExactlyNowIsNotLate() {
         moveTo(at(min(35)));
 

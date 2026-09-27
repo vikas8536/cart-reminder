@@ -79,7 +79,7 @@ public final class DynamoTables {
                         .indexName(RETRYING_BY_SHARD)
                         .keySchema(key("retryShard", KeyType.HASH), key("nextAttemptAt", KeyType.RANGE))
                         .projection(Projection.builder().projectionType(ProjectionType.INCLUDE)
-                                .nonKeyAttributes("srcPartition").build())
+                                .nonKeyAttributes("srcPartition", "sendBy").build())
                         .build())
                 .build(), true);
     }

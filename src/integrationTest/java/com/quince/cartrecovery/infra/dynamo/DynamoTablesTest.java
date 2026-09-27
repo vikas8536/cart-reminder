@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -68,7 +69,7 @@ class DynamoTablesTest {
         assertEquals("retryShard", gsi.keySchema().get(0).attributeName());
         assertEquals("nextAttemptAt", gsi.keySchema().get(1).attributeName());
         assertEquals(ProjectionType.INCLUDE, gsi.projection().projectionType());
-        assertEquals(List.of("srcPartition"), gsi.projection().nonKeyAttributes());
+        assertEquals(Set.of("srcPartition", "sendBy"), Set.copyOf(gsi.projection().nonKeyAttributes()));
         assertEquals(TimeToLiveStatus.ENABLED,
                 ddb.describeTimeToLive(b -> b.tableName(table)).timeToLiveDescription().timeToLiveStatus());
     }
