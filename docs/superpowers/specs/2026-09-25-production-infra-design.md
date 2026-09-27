@@ -345,7 +345,7 @@ Duplicate-timer handling moves to the dispatcher claim: scenario 6 and `Reminder
 ## 9. Documentation updates
 
 - `DESIGN.md`: sections 4 to 7 for the fenced ledger claim, the single lateness deadline, the per-partition watermark gate, the timer-first detector order, the Redis-rebuildable rule, monotonic timers, and field-scoped cart updates; section 9 for the fast and slow lanes on a shared budget; section 7 for the circuit breaker, jitter, and poison handling; section 3 for the guardrail pause switch and the `ABANDONED` per-arm outcome record; section 10 for first-name personalization built at send time; section 8 capacity from §5.5; section 11 gains the infra adapter column and how to run it; a note that per-shopper capping would use a counter item, not re-keying; the "Demonstrated by" citations extended to the infra tests.
-- `DESIGN.md` §13 gains: how long does the gateway honour an idempotency key? The design depends on it for the two at-most-once exceptions in §3.
+- `DESIGN.md` §15 gains: how long does the gateway honour an idempotency key? The design depends on it for the two at-most-once exceptions in §3.
 - `README.md`: the runbook in §7.5.
 
 ## 10. Assumptions
@@ -357,4 +357,4 @@ Duplicate-timer handling moves to the dispatcher claim: scenario 6 and `Reminder
 
 ## 11. Out of scope
 
-Real sends and gateway integration, provisioning real AWS (Terraform or CloudFormation), CI workflows, TLS and authentication, multi-region, schema registry (payloads stay JSON with `schemaVersion`), Kafka transactions and exactly-once semantics, timing-variant experiment arms (a single global `OFFSETS`; DESIGN §10 describes arms as future work), and the open business questions in `DESIGN.md` section 13.
+Real sends and gateway integration, provisioning real AWS (Terraform or CloudFormation), CI workflows, TLS and authentication, multi-region, schema registry (payloads stay JSON with `schemaVersion`), Kafka transactions and exactly-once semantics, timing-variant experiment arms (a single global `OFFSETS`; DESIGN §10 describes arms as future work), and the open business questions in `DESIGN.md` section 15.

@@ -74,7 +74,7 @@ Every role serves three plain-text endpoints on `HEALTH_PORT` (8081). Role ports
 ```
 src/main/java/com/quince/cartrecovery/
   model/      events, cart record, timer, intent, config
-  ports/      interfaces: clock, state store, timer store, ledger, outbox, sink, dead letter queue
+  ports/      interfaces: clock, state store, timer store, watermark, intent publisher, ledger, send budget, sink, outcome recorder, dead letter queue
   core/       AbandonmentDetector, ReminderScheduler, Dispatcher, Reconciler, Metrics
   inmemory/   adapters and FakeClock
   Pipeline    wiring; ingest, advanceTo, outage, restart, redeliver, replayDeadLetters

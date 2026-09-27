@@ -4,7 +4,7 @@
 
 Shoppers who add items and then go quiet get up to three reminders, at 30 minutes, 1 hour, and 24 hours after their last activity, unless they purchase, clear, or come back to the cart first. Detection is event-driven. Each cart has one record and one pending timer tagged with the cart's version. A timer that fires checks the tag against the record and drops itself if anything changed, so cancellation is a compare, not a delete, and works under at-least-once delivery. Every send has a deterministic idempotency key of cart id, version, and offset index, which dedupes at the ledger and at the notification provider. Failures retry with backoff, dead-letter with a reason, and replay safely under the same key.
 
-The runnable pipeline in this repository implements detection, scheduling, cancellation, idempotency, and failure handling behind interfaces with in-memory adapters, driven by a fake clock. Section 11 maps each interface to its production backing.
+The runnable pipeline in this repository implements detection, scheduling, cancellation, idempotency, and failure handling behind interfaces with in-memory adapters, driven by a fake clock. Section 11 maps each interface to its production backing. The same core classes also run as separately deployable roles on Kafka, Redis, and DynamoDB (Section 12), measured under load on one laptop (Section 13).
 
 ## 2. Assumptions
 
@@ -13,7 +13,7 @@ The runnable pipeline in this repository implements detection, scheduling, cance
 - Reminders go through an existing notification gateway that accepts an idempotency key. The gateway is out of scope.
 - Offsets are measured from last activity, so with defaults the first reminder fires at the moment the cart is declared abandoned. Configuration rejects a first offset smaller than the window.
 - A resume, meaning the shopper reopened the cart, counts as activity. It cancels pending reminders and restarts the inactivity clock. A frequency cap of three sequences per cart per 7 days stops a shopper who keeps peeking from receiving endless sequences.
-- The company does not run a workflow engine. See section 12 for the Temporal alternative.
+- The company does not run a workflow engine. See section 14 for the Temporal alternative.
 
 ## 3. Success and guardrail metrics
 
@@ -21,7 +21,7 @@ The runnable pipeline in this repository implements detection, scheduling, cance
 
 **Success.** Primary: recovery rate, the share of abandoned carts that purchase within 7 days of abandonment, treatment versus holdout, reported with confidence intervals. Secondary: recovered revenue per abandoned cart, time to recovery. Attribution uses the purchase event, not link clicks, so open and click tracking do not bias it.
 
-**Guardrails, the signs of harm.** Unsubscribe and spam-complaint rates per send, bounce rate, sends after purchase, duplicate sends, sends per shopper per day against the frequency cap, and holdout purchase rate not dropping. Any of these breaching its threshold pauses dispatch. The infra build implements the switch itself: a `recovery-meta.paused` flag, checked by every dispatcher replica every 5 seconds, pauses both lanes within one poll cycle once set. The in-memory pipeline still only counts sends, cancellations, skips, and dead letters, with no threshold logic of its own. Every abandonment, treatment or holdout, is recorded once as an `ABANDONED` outcome tagged with its arm, so the control-group denominator (abandoned carts per arm) comes from the same event stream as the guardrail counts, not a separate query.
+**Guardrails, the signs of harm.** Unsubscribe and spam-complaint rates per send, bounce rate, sends after purchase, duplicate sends, sends per shopper per day against the frequency cap, and holdout purchase rate not dropping. The intent is that a breach pauses dispatch, but nothing in either mode computes these rates or compares them with a threshold. What exists is a manual switch: an operator sets `recovery-meta.paused`, every dispatcher replica re-reads it every 5 seconds, and both lanes and the retry loop pause until it is cleared (§12.6). The in-memory pipeline only counts sends, cancellations, skips, and dead letters. Every abandonment, treatment or holdout, is recorded once as an `ABANDONED` outcome tagged with its arm, so the control-group denominator (abandoned carts per arm) comes from the same event stream as the guardrail counts, not a separate query.
 
 **System health.** Consumer lag, timer backlog past due, fire latency p99, dead letter depth, dedupe hit rate, skipped-for-lateness count.
 
@@ -107,6 +107,8 @@ The residual window is the gateway round trip. Sends after purchase are counted 
 
 A reopened cart has a new version, so its reminders get new keys and are not confused with the earlier cycle's. Demonstrated by Verifier 13.
 
+**Superseded reminders leave no outcome.** A reminder whose cycle is superseded by a resume or purchase before its intent is published never produces an outcome record. The resume's `CHECK_ABANDON` upsert overwrites the pending timer, the purchase removes it, or, if the timer still fires, the version compare drops it and acks it with only a `timers.stale` count, which is shared with every other stale fire. This is deliberate product behaviour: an active shopper is never reminded. But production has no outcome kind and no dedicated counter for it, so the outcome stream cannot tell "superseded" from "silently lost". The load test works around this from the workload script (`MissingBreakdown`): an expected key with no outcome whose superseding event came at or before its `sendBy` is counted as "superseded before send" and excluded from unexplained missing. The rest is split into "superseded after sendBy" (the cart moved on only after the deadline, so the pipeline was late) and "never superseded, no outcome" (a possible silent loss). `CorrectnessSummary` and `Accounting.unexplainedMissing` compute unexplained missing as expected − sent − skipped late − cancelled − dead − superseded before send, counting outcomes only over expected keys. That deliberately deviates from the production-infra spec's §8.5 formula, which does not subtract superseded keys.
+
 ## 7. Failure handling
 
 | Failure | Behaviour | Demonstrated by |
@@ -160,7 +162,7 @@ Delay, never drop events, never reject upstream. The pipeline is off the checkou
 
 ## 11. The runnable pipeline
 
-Java 21, Gradle, no runtime dependencies. `./gradlew test` runs the fake-clock verifier, `./gradlew run` prints a scripted timeline.
+Java 21 and Gradle. The runtime dependencies in `build.gradle.kts` serve the infra adapters: `kafka-clients` 4.3.1, `lettuce-core` 6.7.1, the AWS SDK v2 (BOM 2.54.17) `dynamodb` client with `apache5-client`, Jackson 2.19.1 (`jackson-databind`, `jackson-datatype-jsr310`), and `slf4j-simple` at runtime. The in-memory mode and its tests use none of them, so they need only a JDK and no infrastructure. `./gradlew test` runs the fake-clock verifier and unit tests (including the in-memory halves of the adapter contract tests), and `./gradlew run` prints a scripted timeline. `./gradlew integrationTest`, which `./gradlew check` also runs, needs Docker for Testcontainers.
 
 | Interface | In-memory adapter | Infra adapter |
 |---|---|---|
@@ -176,23 +178,189 @@ Java 21, Gradle, no runtime dependencies. `./gradlew test` runs the fake-clock v
 
 The `Outbox` port and `InMemoryOutbox` no longer exist: dedupe moved from a scheduling-time ledger-plus-outbox transaction to a fenced claim taken by the dispatcher at send time (§5, §6).
 
-**Running the infra build.** `docker compose --env-file demo.env up -d --build` starts Kafka, Redis, and DynamoDB Local plus every role at 2 replicas (1 for the reconciler), against `demo.env`'s compressed timings; `docker compose --env-file demo.env --profile load run --rm -e RATE=50 -e DURATION=PT60S loadgen` drives a load test and writes a report under `build/reports/load/`. Every invariant this section's in-memory tests demonstrate is proven again on real infra: contract tests prove adapter parity directly (the monotonic upsert, conditional remove, claim and lease expiry, watermark generation fencing, ledger claim and takeover), and the infra end-to-end tests — roles running as in-process threads against real containers — prove wiring and failure semantics: idle partitions do not pause the gate, a mid-sequence purchase stops the sequence, duplicate and out-of-order events send exactly once, two schedulers and two dispatchers on shared shards send no duplicates across 200 carts, a partial failure rate dead-letters and replays cleanly, a Redis `FLUSHALL` pauses sending and self-heals, and a stopped detector holds only its own partition's carts. A future per-shopper send cap (rather than per-cart) would add a counter item keyed by shopper, incremented by the scheduler alongside `sequenceStarts` — not a change to any key shown above.
+**Running the infra build.** `docker compose --env-file demo.env up -d --build` starts Kafka, Redis, and DynamoDB Local plus every role at 2 replicas (1 for the reconciler), against `demo.env`'s compressed timings; `docker compose --env-file demo.env --profile load run --rm -e RATE=50 -e DURATION=PT60S loadgen` drives a load test and writes a report under `build/reports/load/`. Section 12 describes the roles and README.md is the operator runbook. The infra tests do not re-prove every invariant above; they cover two things. The adapter contract tests (`TimerStoreContract`, `WatermarkContract`, `SendLedgerContract`, `CartStateStoreContract`) run the same cases against the in-memory adapter in `test` and against Redis or DynamoDB Local in `integrationTest`: the monotonic upsert, conditional remove, claim, release, lease expiry and ack; watermark generation fencing, max within a generation, staleness and the `-1` minimum; the ledger claim, takeover at `leaseUntil`, stale-token rejection, retry listing and reopen; and the cart conditional updates. `EndToEndIT` runs the roles as in-process threads against real containers, in seven scenarios, one test each: three sends in order for one cart over 8 partitions (idle partitions do not stall the gate), a mid-sequence purchase stops the rest, duplicate and out-of-order events send each key once, two schedulers and two dispatchers send no key twice across 200 carts, a 30% transient failure rate retries, dead-letters and replays each dead key once, a Redis `FLUSHALL` mid-sequence is rebuilt without duplicates, and a stopped detector holds a reminder until the purchase behind it cancels it. `RedisRestartIT` restarts Redis after dropping a detector upsert and checks that the failover replay restores it. Timing under load, the lateness bounds and the 0.1% missed target are not covered by these tests; Section 13 has the measured numbers. A future per-shopper send cap (rather than per-cart) would add a counter item keyed by shopper, incremented by the scheduler alongside `sequenceStarts` — not a change to any key shown above.
 
 **Operating the infra build.** Every role serves `/health`, `/ready` and `/metrics` on `HEALTH_PORT`; the README's operator runbook lists every key. `/health` is the compose healthcheck: it fails only when a loop has not iterated for 15 s. That fixed bound is deliberately looser than spec §7.4's "3× poll interval", so a GC pause or a slow dependency call never restarts a container, and loops keep beating while backing off or paused. `/ready` shows per-partition watermark lag (`stale` when no end-offset snapshot is satisfied), `stuck.<topic>-<p>`, breaker and pause state, and reconciler sweep time. `/metrics` lists the counters, which are also logged every 10 s.
 
-**Holding on a stale watermark.** When a timer's source partition reads as stale (`Instant.EPOCH`: never published, or silent for more than 5 s), `ReminderScheduler` cannot tell how far behind the detector is, so it releases the timer for a fixed `MAX_HOLD` of 60 s. A known gap makes it hold only for that gap, clamped to 1 to 60 s. At production timings (5 to 30 minute lateness bounds) 60 s costs nothing. With `demo.env`'s 20 to 30 s bounds, one stale hold outlasts the whole bound, so a reminder held that way is skipped late instead of sent. That is what happens after a cold start, a `FLUSHALL`, or a detector stall, and it is a main contributor to the recorded load run's skipped-late count. A shorter `MAX_HOLD`, or one tied to the smallest lateness bound, would fix that for the demo, at the cost of more timer churn while a partition really is down.
+**Holding on a stale watermark.** When a timer's source partition reads as stale (`Instant.EPOCH`: never published, or silent for more than 5 s), `ReminderScheduler` cannot tell how far behind the detector is, so it releases the timer for a fixed `MAX_HOLD` of 60 s. A known gap makes it hold only for that gap, clamped to 1 to 60 s. At production timings (5 to 30 minute lateness bounds) 60 s costs nothing. With `demo.env`'s 20 to 30 s bounds, one stale hold outlasts the whole bound, so a reminder held that way is skipped late instead of sent. That is what happens after a cold start, a `FLUSHALL`, or a detector stall, and it is a main contributor to the recorded load run's skipped-late count (§13). A shorter `MAX_HOLD`, or one tied to the smallest lateness bound, would fix that for the demo, at the cost of more timer churn while a partition really is down. §12.2 describes the watermark behind this hold.
 
-Core classes: `AbandonmentDetector` handles events, `ReminderScheduler` handles timer fires, `Dispatcher` drains the outbox, `Reconciler` rebuilds timers. `Pipeline` wires them and drives the clock. `advanceTo` stops at every timer and retry due time so each fire runs at its own virtual time.
+Core classes: `AbandonmentDetector` handles events, `ReminderScheduler` handles timer fires, `Dispatcher` handles one reminder intent at a time (`handle`: `sendBy` pre-check, send token, watermark gate, fenced ledger claim, cart re-check, send), runs the retry pass over a shard's due ledger rows (`retryDue`), and reopens dead letters for replay (`replay`), and `Reconciler` rebuilds timers. `Pipeline` wires them and drives the clock. `advanceTo` stops at every timer and retry due time so each fire runs at its own virtual time.
 
 The verifier covers: the default schedule, clock reset on edit, cancellation by purchase, clear, and resume, duplicate events, duplicate timers, out-of-order events, transient retry, permanent failure with replay inside the lateness bound, a replay after the bound dropped rather than sent, a replay after purchase cancelled, restart with timer rebuild, including a restart after abandonment but before the first reminder, lateness skipping, holdout, reopen after purchase, the frequency cap, config validation, and a hundred interleaved carts. `PipelineTest` adds a restart after an outage longer than the whole sequence, which rebuilds nothing, a restart after a partial outage, which skips straight to the next offset still on time, and an event ingested after timers were due, which fires them first.
 
-## 12. Alternatives considered
+## 12. Production infrastructure
+
+One application and one image. `Main` runs the fake-clock demo when no `--role` is given (or with `--mode=inmemory`), and otherwise runs the named role until SIGTERM. An unknown role or mode exits with code 2. The core classes of Sections 4 to 7 are shared unchanged. Only the adapters (§11 table) and the role wiring in `app/` are infra-specific. The build follows `docs/superpowers/specs/2026-09-25-production-infra-design.md`. Where the code differs from that spec, this section describes the code. README.md is the operator runbook: commands, drills with expected outcomes, and the health endpoints.
+
+### 12.1 Roles and deployment
+
+| Role | What it does | In `docker-compose.yml` |
+|---|---|---|
+| `init` | Creates the three tables (TTL enabled), the `recovery-meta` item (S, P and `paused = false`, each written only if absent), the seven topics with P partitions each, the Redis `epoch` key, and the first stored Redis identity. Refuses to continue if the configured S or P differ from the stored ones. Idempotent. | one-off; every long-running role waits for it to complete successfully |
+| `detector` | Consumes `cart-events` in group `detector` (500 records per poll, 500 ms poll timeout). `AbandonmentDetector` writes the timer, then the cart. Publishes watermarks (§12.2). | 2 replicas |
+| `scheduler` | Claims up to `MAX_IN_FLIGHT` due timers across all shards, runs `ReminderScheduler.onTimer` on each, then acks or releases it. Idles 200 ms when nothing is due. | 2 replicas |
+| `dispatcher` | Two lane consumers, groups `dispatcher-fast` and `dispatcher-slow` (50 records per poll), share one `TokenBucket` and one `CircuitBreaker` around `KafkaRecordingSink`. A control loop runs every `RETRY_POLL`: it calls `Dispatcher.retryDue` for every shard, starting at a random one, releases gate-held partitions whose source caught up, and re-reads `recovery-meta.paused` every 5 s. | 2 replicas |
+| `reconciler` | Every 1 s, checks the Redis identity. It sweeps shards or runs the failover replay (§12.9), one piece of work at a time. | 1 replica |
+| `replay` | One-off. Reads `reminder-dlq` in group `replay`, from its committed offset to the end offsets at start, and calls `Dispatcher.replay`, which reopens `DEAD` ledger rows. The dispatchers' retry loop then sends or skips them. | no service of its own: `docker compose run --rm dispatcher --role=replay` |
+| `loadgen` | Produces a scripted workload at `RATE` for `DURATION` (environment variables, not flags), waits for lag to drain, reads `sink-sends` and `reminder-outcomes`, and writes the report. | `load` profile, on demand |
+
+**Threads.** Each role's long-running loops run on platform threads (`RoleContext.runLoops`), and a Kafka consumer is only ever touched by its own poll thread. Handler work runs on virtual threads: the consumer loop's per-cart groups, the scheduler's claimed timers, and the reconciler's per-shard sweep. Platform threads are kept where a virtual thread would be wrong. The poll threads and the reconciler's replay worker drive a `KafkaConsumer`. `RoleContext.verifyStartup`, and the `BatchConsumerLoop` constructor for its dead-letter topic, load producer metadata on the platform thread, so a virtual thread never waits for metadata inside the producer's monitor.
+
+**Startup checks.** Every role except `loadgen` calls `RoleContext.verifyStartup`, which refuses to start when `recovery-meta` is missing, when `SHARDS` or `PARTITIONS` differ from the values stored there, or when any of the seven topics is missing or has a partition count other than `PARTITIONS`. The role then throws, the process exits with code 1, and compose restarts it (`restart: unless-stopped`).
+
+**Shutdown.** On SIGTERM, `Main`'s shutdown hook interrupts the role thread and waits up to 30 s for it to return. `runLoops` then stops each loop through its stop action: `BatchConsumerLoop.close()` stops polling, gives in-flight groups up to 25 s, commits completed prefixes only, and closes the consumer. The dispatcher closes both lanes in parallel under one 27 s deadline, and the scheduler and reconciler loops stop at their next check. Compose allows 40 s (`stop_grace_period`). A loop that ends on its own is treated as a failure: the process exits and is restarted. §11 describes the `/health`, `/ready` and `/metrics` endpoints.
+
+### 12.2 Watermark
+
+The watermark `W[p]` is a Redis time before which every record appended to `cart-events` partition `p` has been processed and committed. The detector's `DetectorWatermarkHooks` maintain it, and `RedisWatermark` stores it.
+
+- **Snapshots.** Before a poll, at most every 250 ms, the detector reads Redis `TIME` as `T` and *then* the broker's end offsets `E` for its assigned partitions. Every record appended before `T` therefore lies below `E[p]`. A failed call takes no snapshot. The latest 8 snapshots are kept.
+- **Publishing.** After every loop iteration, including empty polls, in-flight iterations and backoff, the detector publishes for each assigned partition the `T` of the newest snapshot whose `E[p]` is at or below the committed position. Snapshots older than 2 s (8 × 250 ms) no longer count, so a detector cut off from the broker stops publishing and its entries go stale. If no snapshot is satisfied, nothing is written. For a partition this member has not committed yet, the broker's committed offset seeds the position, so an idle partition still counts as caught up.
+- **Fencing (`wmSet.lua`).** Each entry is `generation|eventTime|updatedAt`, where the generation is the classic consumer-group generation id (consumers use `group.protocol=classic` for this reason) and `updatedAt` is Redis `TIME`. A lower generation is rejected while the stored entry is fresh. Once the entry is stale (older than 5 s), a lower generation is accepted, so a consumer-group reset, which restarts generations low, cannot fence a partition forever. The same generation keeps the maximum event time, and a higher generation overwrites.
+- **Reading (`wmGet.lua`).** An entry that is missing, or was not written for more than 5 s, reads as `Instant.EPOCH`. `current(-1)`, used for a cart record written before `srcPartition` existed, is the minimum over partitions `0..PARTITIONS−1`. `now()` is Redis `TIME`, so both gates compare Redis times.
+
+Two gates use it:
+
+| Gate | Condition | When not met |
+|---|---|---|
+| Scheduler, `CHECK_ABANDON` only | `W[srcPartition] ≥ dueAt + CLOCK_SKEW` | release the timer for `clamp(dueAt + CLOCK_SKEW − W, 1 s, 60 s)`, or for 60 s (`MAX_HOLD`) when `W` reads as `EPOCH`; counts `timers.held` |
+| Dispatcher, every intent and every retry | `W[srcPartition] ≥ TIME − CLOCK_SKEW` | a consumed intent returns HOLD: the loop seeks the lane partition back to the held record and pauses it, and `DispatcherRole.GateHolds` keeps it paused until the control loop sees the source partition caught up; a retry row is skipped this round |
+
+A snapshot is taken at most every 250 ms and published after the commit, so under normal load the watermark trails Redis time by about 0.5 to 1 s (measured at 520 to 1,010 ms while debugging the dispatcher's integration tests). `CLOCK_SKEW` must be larger than that trail, or the dispatcher gate holds a healthy system. It is 5 s in compose and 2 s in the integration tests. §11, "Holding on a stale watermark", explains why the 60 s hold costs sends at `demo.env`'s short lateness bounds.
+
+### 12.3 Consumer loop
+
+`BatchConsumerLoop` is the one consumer implementation, used by the detector and both dispatcher lanes.
+
+- **Batches.** Each poll's records are grouped by record key (the cart id). Groups run concurrently on virtual threads, at most `MAX_IN_FLIGHT` at once, with records in order within a group. While a batch is in flight the poll thread keeps polling with every partition paused, so group membership, hooks and health beats continue.
+- **Commits.** After the batch, each partition is committed at its lowest held or unfinished offset, never past it, and seeked back there. On a revoke, only completed prefixes are committed. A lost partition is never committed.
+- **HOLD.** A handler may return `HOLD` (the dispatcher's gate or no send token). The record and everything after it on that partition are redelivered, and the partition is paused for one poll timeout (500 ms), or longer through the pause predicate.
+- **Poison.** A `PoisonException`, from a decode failure or a deterministic store error (§12.6), sends the raw record to the topic's dead-letter topic with `error` and `source-offset` headers, then counts as done and is committed. If the dead-letter produce fails, the record is retried.
+- **Retry.** Any other exception is retried in process up to 3 attempts (100 ms, then 200 ms backoff). After that the partition is seeked back to the failed record and paused with exponential backoff from 1 s, capped at 30 s.
+- **Pause predicate.** `pauseWhile` is evaluated for every assigned partition on every iteration, and also inside `onPartitionsAssigned`, so a newly assigned partition that should be paused never delivers a batch first. A predicate that throws counts as paused.
+
+### 12.4 Send ledger
+
+`DynamoSendLedger` stores one row per idempotency key. The partition key is `cartId`; the sort key is `sk = "<version, 20 digits>#<offsetIndex, 2 digits>"` (`DynamoSendLedger.sk`), so `begins_with("<version>#")` never matches a longer version. The key string itself is `cartId:version:offsetIndex` (`LedgerKey`), parsed from the right so a cart id may contain `:`.
+
+| Transition | Condition | Effect |
+|---|---|---|
+| `claim` | row absent, or `RETRYING` with `nextAttemptAt ≤ now`, or `SENDING` with `leaseUntil ≤ now` (takeover is inclusive) | `SENDING` with a fresh UUID `leaseToken`, `leaseUntil = now + LEASE`, `nextAttemptAt = leaseUntil`, `attempts + 1`. `sendBy`, `srcPartition` and `ttl` are written only if absent, so a takeover keeps the stored ones. Otherwise `NotClaimed` (`final` or `leased`), counted `dispatch.duplicate` |
+| `markRetry` | `SENDING` and the caller's token | `RETRYING`, `nextAttemptAt = now + full-jitter backoff`, lease removed |
+| `finish` | `SENDING` and the caller's token | final `SENT`, `SKIPPED_LATE`, `CANCELLED` or `DEAD` (with `reason`); lease, `retryShard` and `nextAttemptAt` removed |
+| `reopen` | `DEAD` | `RETRYING`, due now, `attempts = 0` |
+
+A `false` from `markRetry` or `finish` means the lease was lost, counted as `dispatch.lease_lost`. Every non-final row carries `retryShard = "s#<shard>"`, so the sparse GSI `retrying-by-shard` (partition `retryShard`, sort `nextAttemptAt`, projecting `srcPartition`) holds exactly the rows a retry loop may take: `RETRYING` rows once due, and `SENDING` rows whose lease expired. `Dispatcher.retryDue` reads it (eventually consistent), checks the watermark gate, takes a send token *before* claiming so it never holds a lease while waiting for capacity, and then claims. A send is not started with less than `GATEWAY_TIMEOUT` of lease left (`dispatch.lease_expiring`). On a transient failure at `attempts ≥ MAX_SEND_ATTEMPTS`, or on a permanent failure, the dispatcher produces the dead letter to `reminder-dlq`, records a `DEAD` outcome, and then calls `finish(DEAD)`. `highestOffsetIndex(cartId, version)` is a consistent descending query on `begins_with(sk, "<version>#")` with limit 1, which the reconciler uses to resume after the highest offset already in the ledger.
+
+### 12.5 Data and topics
+
+**DynamoDB** (on-demand billing):
+
+| Table | Key | Contents | TTL |
+|---|---|---|---|
+| `carts` | `cartId` | status, version, lastActivityAt, items (at most 50), shopperKey, firstName, arm, sequenceStarts, srcPartition. While the cart has a next step, also `openShard = "s#<n>"` and `openUntil` (last activity + last offset + its lateness bound, rounded up to the hour), which form the sparse `KEYS_ONLY` GSI `open-by-shard` read by the reconciler | `ttl` = lastActivityAt + 30 days |
+| `send-ledger` | `cartId`, `sk` | §12.4; GSI `retrying-by-shard` | `ttl` = first claim + 30 days |
+| `recovery-meta` | `id = "meta"` | `shards`, `partitions`, `paused`, `redisRunId`, `redisRole`, `redisChangeAt` | none |
+
+**Redis** (rebuildable only, AOF on in compose; all script time comes from Redis `TIME`):
+
+| Key | Type | Contents |
+|---|---|---|
+| `timers:{s}` | sorted set | member cartId, score due time or lease expiry (`LEASE`) |
+| `timerdata:{s}` | hash | cartId → `kind\|version\|offsetIndex\|srcPartition\|dueAtMillis` |
+| `watermarks` | hash | partition → `generation\|eventTime\|updatedAt` |
+| `epoch` | string | sentinel written by `init` and after every reconciler sweep; missing means Redis lost data |
+
+**Kafka.** There are seven topics, all keyed by cart id and all with the same partition count P. `init` creates them with `min.insync.replicas` from config, and every role verifies them at startup. Producers use `acks=all` and idempotence.
+
+| Topic | Value | Retention |
+|---|---|---|
+| `cart-events` | cart event | 7 days |
+| `cart-events-dlq` | original bytes, headers `error`, `source-offset` | 30 days |
+| `reminder-intents-fast` | intent, `offsetIndex < FAST_OFFSETS` | 7 days |
+| `reminder-intents-slow` | intent, `offsetIndex ≥ FAST_OFFSETS` | 7 days |
+| `reminder-dlq` | dead letter (intent, reason, failedAt); or the raw bytes of a poison intent with `error`, `source-offset` headers | 30 days |
+| `reminder-outcomes` | outcome (`ABANDONED`, `SENT`, `SKIPPED_LATE`, `CANCELLED`, `DEAD`) | 7 days |
+| `sink-sends` | one record per recording-sink `send()` call | 7 days |
+
+Payloads are JSON (`JsonCodec`) with `schemaVersion` 1 and epoch-millisecond times; unknown fields are ignored, so writers can add fields before readers know them.
+
+### 12.6 Error classification
+
+Only three kinds of failure are deterministic, meaning poison: a payload that fails to decode, a value the consumer's deserializer rejects, and an AWS 400 whose error code is `ValidationException` or `SerializationException` (`Failures.isDeterministic`, an allow-list). A poison record goes to its dead-letter topic and is committed. A poison timer is acked and counted as `timers.poison`. Everything else is transient and retried without limit, including other 400s such as a missing table or a denied permission, because dead-lettering an infrastructure fault could lose a purchase. Nothing gives up on an endless retry. What surfaces it is the `/ready` key `stuck.<topic>-<p>` (committed offset unchanged for 5 minutes while lag is above 0) for consumers, and the `scheduler.timer_failed` counter for timers, which stay leased and are redelivered.
+
+The `CircuitBreaker` wraps the sink. Over the last 100 send attempts, a transient-failure ratio above 50% opens it for 30 s. While it is open, sends fail fast and both lane consumers and the retry loop pause. After 30 s, one probe send decides whether it closes or reopens. The guardrail switch `recovery-meta.paused` pauses the same consumers and retry loop, and is set by hand (§3). If the item cannot be read, the last known value is kept.
+
+### 12.7 Configuration
+
+`InfraConfig.fromEnv` reads every variable once. Unset or blank takes the default, and compose passes the same values explicitly.
+
+| Variable | Default | Variable | Default |
+|---|---|---|---|
+| `WINDOW` | `PT30M` | `KAFKA_BOOTSTRAP` | `localhost:9092` |
+| `OFFSETS` | `PT30M,PT1H,PT24H` | `REDIS_URL` | `redis://localhost:6379` |
+| `LATENESS_BOUNDS` | `PT5M,PT5M,PT30M` (one per offset) | `DYNAMO_ENDPOINT` | unset (real AWS); set for DynamoDB Local |
+| `FREQUENCY_CAP` | `3` | `SHARDS` | `8` |
+| `FREQUENCY_WINDOW` | `P7D` | `PARTITIONS` | `8` |
+| `HOLDOUT_PERCENT` | `10` | `REPLICATION_FACTOR` / `MIN_INSYNC_REPLICAS` | `1` / `1` |
+| `MAX_SEND_ATTEMPTS` | `5` | `MAX_SEND_RATE` (per replica, per second) | `1000` |
+| `RETRY_BASE` | `PT1M` | `FAST_RESERVE` | `0.3` |
+| `FAST_OFFSETS` | `2` | `SEND_FAILURE_RATE` (load testing) | `0` |
+| `LEASE` | `PT90S` | `RECONCILE_INTERVAL` | `PT5M` |
+| `GATEWAY_TIMEOUT` | `PT30S` | `RETRY_POLL` | `PT1S` |
+| `CLOCK_SKEW` | `PT5S` | `MAX_IN_FLIGHT` | `256` |
+| | | `HEALTH_PORT` | `8081` |
+
+Validation includes `LEASE ≥ 3 × GATEWAY_TIMEOUT`, one lateness bound per offset, a first offset not before `WINDOW`, `MIN_INSYNC_REPLICAS ≤ REPLICATION_FACTOR`, and `FAST_RESERVE` in [0, 1). A violation prints one line, `invalid configuration: <message>`, to stderr and exits with code 2. Every role prints `role=<name> config hash <12 hex>` at startup (the first 12 hex characters of SHA-256 over the effective config), so replicas running different configs are easy to spot. `demo.env` overrides only the timings (window 30 s, offsets 30/60/120 s, bounds 20/20/30 s, `RETRY_BASE` 2 s, `RECONCILE_INTERVAL` 30 s). The 64 shards and partitions of §8 are the production sizing; compose runs 8. `MAX_IN_FLIGHT` also sizes the DynamoDB HTTP connection pool.
+
+### 12.8 Virtual threads and pinning
+
+DynamoDB calls run on virtual threads, so the HTTP client must not hold a monitor while it blocks. The SDK's default `apache-client` (Apache HttpClient 4) does: its connection pool (`AbstractConnPool`) waits for a free connection, and drains released responses, inside `synchronized`. Under pool contention every carrier thread was pinned and the JVM deadlocked, and the end-to-end tests timed out. The build uses `apache5-client` (HttpClient 5, which uses locks instead of monitors), sized to `MAX_IN_FLIGHT`. `integrationTest` runs with `-Djdk.tracePinnedThreads=full`. `PinningGuard`, which JUnit auto-registers for every integration test, fails a test if a pinning report was printed while it ran. `DynamoTablesTest.clientDoesNotPinVirtualThreadsUnderPoolContention` is the regression test: 64 virtual threads share a 2-connection pool. `PinningGuardSelfIT` checks that the guard itself fires.
+
+### 12.9 Failover and reconciler
+
+The reconciler role runs a 1 s tick (§7 covers what a rebuild does).
+
+- **Sweep.** It sweeps at start, every `RECONCILE_INTERVAL`, and immediately when the Redis `epoch` key is missing, meaning Redis lost data. Shards are swept in parallel on virtual threads (`Reconciler.reconcileShard`), and `epoch` is rewritten afterwards. The duration goes to `/ready`, flagged `reconciler.sweep_slow` when it exceeds the smallest lateness bound.
+- **Identity.** Every tick, even while a sweep or replay is running, it reads the Redis `run_id` and replication `role` and compares them with `recovery-meta`. On a difference it calls `RecoveryMetaStore.markRedisChange`, which sets `redisChangeAt` only if it is absent, so the earliest unrepaired change is kept. The write is also conditional on the stored identity still being the one just read, so a replay that has already stored the new identity is never marked stale again.
+- **Failover replay.** Once the in-flight work finishes, it reads `cart-events` on a platform thread with a consumer that belongs to no group, from `offsetsForTimes(redisChangeAt − 60 s)` to the end offsets read at the start. It re-issues a `CHECK_ABANDON` upsert for every edit or resume, which the monotonic upsert makes safe, and only then stores the new identity. If Redis changes again during the replay, the replay aborts and the next tick restarts from the stored earliest change.
+
+`init` stores the first identity, so a reconciler restart does not look like a failover. `RedisRestartIT` and `EndToEndIT.flushAllMidSequenceIsRebuiltWithoutDuplicates` exercise both paths.
+
+## 13. Measured results and known limitations
+
+The recorded run is `docs/load-reports/2026-09-26T21-41-08.md`. Every role and every container shared one 12-core laptop, so the figures are a floor for that machine, not a capacity figure for the design.
+
+**Rate step-down.** 5,000 events/s (the §2 baseline) was aborted after about 90 s, with detector lag rising from about 33k to 242k. 1,000/s was rejected with lag still climbing past 21k. 500/s was rejected because lag trended upward without bound. 250/s held: lag peaked at about 1.4k and drained to 0. The detector was the bottleneck at every rate. At 250/s target, the achieved rate was 87.3 events/s over an 859 s publish span, because the workload's resume and purchase tails stretch the span well past the nominal 300 s.
+
+**250/s against the §3 targets** (`demo.env` timings):
+
+| Measure | Target | Measured |
+|---|---|---|
+| Sent on time | 99.5% | 73.6% (32,108 of 43,635) |
+| Skipped late | counted, never sent | 22.6% (9,860), mostly the 60 s `MAX_HOLD` on a stale watermark exceeding the 20 to 30 s demo bounds (§11), plus detector lag |
+| Unexplained missing | under 0.1% | 0.35% and 2.1% in the two runs measured (the report records the second, 917 keys); unstable near machine capacity |
+| Duplicate sends | under 0.01% | 0 |
+| Post-purchase sends | under 0.01% | 0 |
+
+The recorded run predates the split of unexplained missing into "superseded after sendBy" and "never superseded, no outcome" (§6), so its 917 is not broken down.
+
+**Known limitations.**
+
+- Detector throughput limits the local stack to about 250 events/s, far below the 5,000/s baseline. It has not been measured on dedicated hardware.
+- The scheduler's fixed 60 s `MAX_HOLD` on a stale watermark is longer than short lateness bounds, so at demo timings a stale partition turns into skipped-late reminders.
+- A reminder superseded before its intent is published leaves no outcome and has no dedicated counter (§6). Only the load test's script-based accounting separates it from a silent loss.
+- The guardrails have no automatic thresholds. Pausing is a manual `recovery-meta.paused` flip (§3).
+- How long a real gateway honours the idempotency key has not been checked. The two at-most-once exceptions depend on it (§15).
+- Only DynamoDB Local has been tested, never real AWS. The code retries unprocessed `BatchGetItem` keys, but that path, GSI propagation lag and throttling have never been exercised against real DynamoDB.
+
+## 14. Alternatives considered
 
 **Batch scan.** Rejected for the reasons in section 4.
 
-**Temporal or a durable workflow engine.** A workflow per cart, edits as signals, a sleep that resets on each signal, and a purchase signal that ends the workflow is a textbook fit, and it removes most of the timer store, reconciliation, and outbox code. The cost is that every edit becomes a durable history write, roughly a billion workflow actions per day at this volume, which is a material bill on a hosted service or a heavy sharded persistence tier when self-hosted, and carts with hundreds of edits need continue-as-new. If the company already runs Temporal, the recommended shape is a hybrid: keep the lightweight stream consumer for the high-volume edit stream and start a workflow only when a cart is confirmed abandoned, about ten times fewer starts than events. That workflow would own the three timers, cancellation by signal, retries, and dead-lettering.
+**Temporal or a durable workflow engine.** A workflow per cart, edits as signals, a sleep that resets on each signal, and a purchase signal that ends the workflow is a textbook fit. It would replace the Redis timer store and its Lua scripts, the reconciler with its failover replay, and most of the send ledger's lease, retry index and dead-letter replay, since workflow timers and activity retries are durable. The stream consumer, the version compare and the gateway idempotency key would stay. The cost is that every edit becomes a durable history write, roughly a billion workflow actions per day at this volume, which is a material bill on a hosted service or a heavy sharded persistence tier when self-hosted, and carts with hundreds of edits need continue-as-new. If the company already runs Temporal, the recommended shape is a hybrid: keep the lightweight stream consumer for the high-volume edit stream and start a workflow only when a cart is confirmed abandoned, about ten times fewer starts than events. That workflow would own the three timers, cancellation by signal, retries, and dead-lettering.
 
-## 13. Questions for the business
+## 15. Questions for the business
 
 - Which contact channels exist for guests, and is capturing an email before checkout acceptable?
 - Is the 24 hour reminder subject to quiet hours or local-time delivery windows?
