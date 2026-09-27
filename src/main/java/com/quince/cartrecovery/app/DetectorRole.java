@@ -6,6 +6,7 @@ import com.quince.cartrecovery.infra.dynamo.DynamoTables;
 import com.quince.cartrecovery.infra.kafka.Topics;
 import com.quince.cartrecovery.inmemory.HashArmAssigner;
 import com.quince.cartrecovery.infra.dynamo.DynamoCartStateStore;
+import com.quince.cartrecovery.infra.dynamo.DynamoSendLedger;
 import com.quince.cartrecovery.infra.kafka.JsonCodec;
 import com.quince.cartrecovery.infra.kafka.KafkaOutcomeRecorder;
 import com.quince.cartrecovery.infra.redis.RedisTimerStore;
@@ -30,6 +31,7 @@ public final class DetectorRole implements Role {
             AbandonmentDetector detector = new AbandonmentDetector(config.recovery(),
                 new DynamoCartStateStore(ctx.dynamo(), DynamoTables.CARTS, config.recovery(), config.shards()),
                 new RedisTimerStore(ctx.redis(), config.shards(), config.dispatch().lease()),
+                new DynamoSendLedger(ctx.dynamo(), DynamoTables.SEND_LEDGER, config.dispatch().lease(), config.shards()),
                 new HashArmAssigner(HashArmAssigner.SALT, config.recovery().holdoutPercent()),
                 new KafkaOutcomeRecorder(ctx.producer()), metrics);
             DetectorWatermarkHooks hooks = new DetectorWatermarkHooks(

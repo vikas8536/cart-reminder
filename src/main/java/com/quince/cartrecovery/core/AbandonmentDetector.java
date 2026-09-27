@@ -13,6 +13,7 @@ import com.quince.cartrecovery.model.TimerKind;
 import com.quince.cartrecovery.ports.ArmAssigner;
 import com.quince.cartrecovery.ports.CartStateStore;
 import com.quince.cartrecovery.ports.OutcomeRecorder;
+import com.quince.cartrecovery.ports.SendLedger;
 import com.quince.cartrecovery.ports.TimerStore;
 import java.time.Instant;
 import java.util.Optional;
@@ -29,16 +30,18 @@ public final class AbandonmentDetector {
     private final ReminderPolicy policy;
     private final CartStateStore store;
     private final TimerStore timers;
+    private final SendLedger ledger;
     private final ArmAssigner arms;
     private final OutcomeRecorder outcomes;
     private final Metrics metrics;
 
-    public AbandonmentDetector(RecoveryConfig config, CartStateStore store, TimerStore timers,
+    public AbandonmentDetector(RecoveryConfig config, CartStateStore store, TimerStore timers, SendLedger ledger,
                                ArmAssigner arms, OutcomeRecorder outcomes, Metrics metrics) {
         this.config = config;
         this.policy = new ReminderPolicy(config);
         this.store = store;
         this.timers = timers;
+        this.ledger = ledger;
         this.arms = arms;
         this.outcomes = outcomes;
         this.metrics = metrics;
@@ -73,6 +76,9 @@ public final class AbandonmentDetector {
         Instant base = displaced.dueAt().minus(reminder ? config.offsets().get(from) : config.window());
         if (base.plus(config.offsets().get(from)).isAfter(occurredAt)) return;
         if (!reminder && !sequenceOwed(displaced)) return;
+        // Offsets the ledger already holds were claimed for sending (a published reminder not yet re-armed, or a
+        // CHECK re-inserted by a failover replay): they are not superseded. Read only on this rare path.
+        from = Math.max(from, ledger.highestOffsetIndex(displaced.cartId(), displaced.version()) + 1);
         for (int j = from; j < config.offsets().size(); j++) {
             if (base.plus(config.offsets().get(j)).isAfter(occurredAt)) break;   // offsets increase: later ones are later still
             String key = new LedgerKey(displaced.cartId(), displaced.version(), j).toString();

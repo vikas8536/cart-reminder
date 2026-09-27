@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.quince.cartrecovery.inmemory.FakeClock;
 import com.quince.cartrecovery.inmemory.InMemoryCartStateStore;
 import com.quince.cartrecovery.inmemory.InMemoryOutcomeRecorder;
+import com.quince.cartrecovery.inmemory.InMemorySendLedger;
 import com.quince.cartrecovery.inmemory.PriorityQueueTimerStore;
 import com.quince.cartrecovery.model.Arm;
 import com.quince.cartrecovery.model.CartRecord;
@@ -33,6 +34,7 @@ class AbandonmentDetectorTest {
     private PriorityQueueTimerStore timers;
     private Metrics metrics;
     private InMemoryOutcomeRecorder outcomes;
+    private InMemorySendLedger ledger;
     private AbandonmentDetector detector;
 
     @BeforeEach
@@ -42,7 +44,8 @@ class AbandonmentDetectorTest {
         timers = new PriorityQueueTimerStore(clock, Duration.ofSeconds(90));
         metrics = new Metrics();
         outcomes = new InMemoryOutcomeRecorder();
-        detector = new AbandonmentDetector(RecoveryConfig.defaults(), store, timers, key -> Arm.TREATMENT, outcomes, metrics);
+        ledger = new InMemorySendLedger(Duration.ofSeconds(90), 4);
+        detector = new AbandonmentDetector(RecoveryConfig.defaults(), store, timers, ledger, key -> Arm.TREATMENT, outcomes, metrics);
     }
 
     private List<Timer> dueAt(Instant t) {
@@ -160,7 +163,7 @@ class AbandonmentDetectorTest {
     @Test
     void assignsArmOnFirstSightAndKeepsIt() {
         AbandonmentDetector holdoutDetector = new AbandonmentDetector(
-            RecoveryConfig.defaults(), store, timers, key -> Arm.HOLDOUT, outcomes, metrics);
+            RecoveryConfig.defaults(), store, timers, ledger, key -> Arm.HOLDOUT, outcomes, metrics);
         holdoutDetector.handle(edited(1, min(0)), 0);
         detector.handle(edited(2, min(1)), 0);
 
@@ -170,7 +173,7 @@ class AbandonmentDetectorTest {
     @Test
     void anEditWritesTheTimerBeforeTheCart() {
         AbandonmentDetector crashing = new AbandonmentDetector(
-            RecoveryConfig.defaults(), failingApply(), timers, key -> Arm.TREATMENT, outcomes, metrics);
+            RecoveryConfig.defaults(), failingApply(), timers, ledger, key -> Arm.TREATMENT, outcomes, metrics);
 
         assertThrows(IllegalStateException.class, () -> crashing.handle(edited(1, min(0)), 2));
 
@@ -182,7 +185,7 @@ class AbandonmentDetectorTest {
     void aPurchaseRemovesTheTimerBeforeTheCart() {
         detector.handle(edited(1, min(0)), 0);
         AbandonmentDetector crashing = new AbandonmentDetector(
-            RecoveryConfig.defaults(), failingApply(), timers, key -> Arm.TREATMENT, outcomes, metrics);
+            RecoveryConfig.defaults(), failingApply(), timers, ledger, key -> Arm.TREATMENT, outcomes, metrics);
 
         assertThrows(IllegalStateException.class, () -> crashing.handle(purchased(2, min(10)), 0));
 
@@ -256,7 +259,7 @@ class AbandonmentDetectorTest {
     @Test
     void anOverdueCheckOnAnAbandonedHoldoutCartRecordsNothing() {
         AbandonmentDetector holdout = new AbandonmentDetector(
-            RecoveryConfig.defaults(), store, timers, key -> Arm.HOLDOUT, outcomes, metrics);
+            RecoveryConfig.defaults(), store, timers, ledger, key -> Arm.HOLDOUT, outcomes, metrics);
         holdout.handle(edited(1, min(0)), 0);
         store.markAbandoned(store.get(CART).orElseThrow(), List.of(T0), false);
         holdout.handle(resumed(2, min(31)), 0);
@@ -275,7 +278,7 @@ class AbandonmentDetectorTest {
     @Test
     void anOverdueCheckOnAHoldoutCartRecordsNothing() {
         AbandonmentDetector holdout = new AbandonmentDetector(
-            RecoveryConfig.defaults(), store, timers, key -> Arm.HOLDOUT, outcomes, metrics);
+            RecoveryConfig.defaults(), store, timers, ledger, key -> Arm.HOLDOUT, outcomes, metrics);
         holdout.handle(edited(1, min(0)), 0);
         holdout.handle(resumed(2, min(31)), 0);
         assertEquals(List.of(), outcomes.all());
@@ -284,7 +287,7 @@ class AbandonmentDetectorTest {
     @Test
     void anOverdueCheckOnACartAtItsFrequencyCapRecordsNothing() {
         AbandonmentDetector capped = new AbandonmentDetector(
-            RecoveryConfig.defaults().withFrequencyCap(1), store, timers, key -> Arm.TREATMENT, outcomes, metrics);
+            RecoveryConfig.defaults().withFrequencyCap(1), store, timers, ledger, key -> Arm.TREATMENT, outcomes, metrics);
         CartRecord first = store.applyEvent(edited(1, min(0)), Arm.TREATMENT, 0).orElseThrow();
         store.markAbandoned(first, List.of(T0), true);
         store.applyEvent(edited(2, min(40)), Arm.TREATMENT, 0);
@@ -293,6 +296,44 @@ class AbandonmentDetectorTest {
         capped.handle(resumed(3, min(71)), 0);
 
         assertEquals(List.of(), outcomes.all());
+    }
+
+    @Test
+    void anOverdueCheckOnACartAbandonedAtItsVersionButCappedRecordsNothing() {
+        AbandonmentDetector capped = new AbandonmentDetector(
+            RecoveryConfig.defaults().withFrequencyCap(1), store, timers, ledger, key -> Arm.TREATMENT, outcomes, metrics);
+        CartRecord first = store.applyEvent(edited(1, min(0)), Arm.TREATMENT, 0).orElseThrow();
+        store.markAbandoned(first, List.of(T0), true);
+        CartRecord second = store.applyEvent(edited(2, min(40)), Arm.TREATMENT, 0).orElseThrow();
+        store.markAbandoned(second, List.of(T0, at(min(70))), false);   // the scheduler found the cap reached
+        timers.upsert(Timer.checkAbandon(CART, 2, at(min(70)), 0));
+
+        capped.handle(resumed(3, min(71)), 0);
+
+        assertEquals(List.of(), outcomes.all());
+    }
+
+    @Test
+    void anOverdueCheckSkipsOffsetsTheLedgerAlreadyHolds() {
+        // A failover replay re-inserted CHECK(1) after reminder 0 was already claimed for sending.
+        detector.handle(edited(1, min(0)), 0);
+        store.markAbandoned(store.get(CART).orElseThrow(), List.of(T0), true);
+        ledger.claim(new LedgerKey(CART, 1, 0).toString(), at(min(35)), 0, at(min(30)));
+
+        detector.handle(resumed(2, min(61)), 0);
+
+        assertEquals(List.of(supersededOutcome(1, 1, at(min(61)))), outcomes.all());
+    }
+
+    @Test
+    void aDisplacedReminderSkipsOffsetsTheLedgerAlreadyHolds() {
+        // REMINDER(1, 1) was published and claimed but not yet replaced by REMINDER(1, 2) when the purchase landed.
+        abandonedWith(Timer.reminder(CART, 1, 1, at(min(60)), 0));
+        ledger.claim(new LedgerKey(CART, 1, 1).toString(), at(min(65)), 0, at(min(60)));
+
+        detector.handle(purchased(2, min(24 * 60 + 1)), 0);
+
+        assertEquals(List.of(supersededOutcome(1, 2, at(min(24 * 60 + 1)))), outcomes.all());
     }
 
     @Test
