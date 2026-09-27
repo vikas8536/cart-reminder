@@ -82,7 +82,7 @@ public final class Pipeline {
             }
             @Override public void release(Lane lane) { netTokensSpent--; }
         };
-        this.detector = new AbandonmentDetector(config, store, timers, arms, outcomes, metrics);
+        this.detector = new AbandonmentDetector(config, store, timers, ledger, arms, outcomes, metrics);
         this.scheduler = new ReminderScheduler(config, DISPATCH, store, timers, watermark, intents, outcomes, metrics);
         this.dispatcher = new Dispatcher(config, DISPATCH, store, ledger, watermark, budget, sink, outcomes, dlq,
             clock, metrics, () -> 1.0);

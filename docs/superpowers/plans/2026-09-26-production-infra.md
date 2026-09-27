@@ -140,7 +140,7 @@ interface SendBudget { boolean tryAcquire(Lane lane); void release(Lane lane); }
 ```java
 Metrics                    // unchanged API: increment(String), get(String), snapshot(); thread-safe after A1
 ReminderPolicy(RecoveryConfig)                          boolean eligible(CartRecord, Instant now)   // unchanged
-AbandonmentDetector(RecoveryConfig, CartStateStore, TimerStore, ArmAssigner, OutcomeRecorder, Metrics)
+AbandonmentDetector(RecoveryConfig, CartStateStore, TimerStore, SendLedger, ArmAssigner, OutcomeRecorder, Metrics)
                                                         void handle(CartEvent event, int srcPartition)
 ReminderScheduler(RecoveryConfig, DispatchConfig, CartStateStore, TimerStore, Watermark,
                   IntentPublisher, OutcomeRecorder, Metrics)
