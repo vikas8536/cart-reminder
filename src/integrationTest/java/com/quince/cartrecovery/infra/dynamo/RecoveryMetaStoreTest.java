@@ -46,9 +46,10 @@ class RecoveryMetaStoreTest {
     @Test
     void redisChangeKeepsTheEarliestUntilTheIdentityIsStored() {
         meta.init(8, 8);
+        meta.setRedisIdentity("run-1", "master");
         Instant first = Instant.parse("2026-01-01T09:00:00Z");
-        meta.markRedisChange(first);
-        meta.markRedisChange(first.plusSeconds(30));
+        assertTrue(meta.markRedisChange(first, "run-1", "master"));
+        assertTrue(meta.markRedisChange(first.plusSeconds(30), "run-1", "master"));
         assertEquals(first, meta.read().redisChangeAt());
 
         meta.setRedisIdentity("run-2", "master");
@@ -56,5 +57,15 @@ class RecoveryMetaStoreTest {
         assertEquals("run-2", m.redisRunId());
         assertEquals("master", m.redisRole());
         assertNull(m.redisChangeAt());
+    }
+
+    @Test
+    void aChangeMarkedAgainstAnIdentityAlreadyReplacedIsANoOp() {
+        // The reconciler tick reads run-1, the replay worker stores run-2 (clearing the change), then the tick's
+        // mark lands: it must not leave a stale redisChangeAt behind for the next failover to replay from.
+        meta.init(8, 8);
+        meta.setRedisIdentity("run-2", "master");
+        assertFalse(meta.markRedisChange(Instant.parse("2026-01-01T09:00:00Z"), "run-1", "master"));
+        assertNull(meta.read().redisChangeAt());
     }
 }

@@ -134,7 +134,7 @@ public final class ReconcilerRole implements Role {
                     return new Identity(runId, role, false);
                 }
                 boolean changed = !runId.equals(m.redisRunId()) || !role.equals(m.redisRole());
-                if (changed) meta.markRedisChange(Instant.now());
+                if (changed) meta.markRedisChange(Instant.now(), m.redisRunId(), m.redisRole());
                 return new Identity(runId, role, changed);
             } catch (RuntimeException e) {
                 metrics.increment("reconciler.errors");

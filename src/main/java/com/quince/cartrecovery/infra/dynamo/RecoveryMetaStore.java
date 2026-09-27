@@ -66,9 +66,16 @@ public final class RecoveryMetaStore {
         set("SET #redisRunId = :runId, #redisRole = :role REMOVE #redisChangeAt", Map.of(":runId", s(runId), ":role", s(role)));
     }
 
-    /** Records a detected Redis restart or failover; keeps the earliest unrepaired change. */
-    public void markRedisChange(Instant at) {
-        set("SET #redisChangeAt = if_not_exists(#redisChangeAt, :at)", Map.of(":at", millis(at)));
+    /**
+     * Records a detected Redis restart or failover; keeps the earliest unrepaired change. Conditional on the stored
+     * identity still being the one the caller read ({@code staleRunId}/{@code staleRole}): if a replay has already
+     * stored the new identity, the change is repaired and nothing is written. Returns whether it wrote.
+     */
+    public boolean markRedisChange(Instant at, String staleRunId, String staleRole) {
+        return Attrs.conditionalUpdate(ddb, table, KEY,
+                "SET #redisChangeAt = if_not_exists(#redisChangeAt, :at)",
+                "#redisRunId = :staleRunId AND #redisRole = :staleRole",
+                Map.of(":at", millis(at), ":staleRunId", s(staleRunId), ":staleRole", s(staleRole)));
     }
 
     private void set(String update, Map<String, AttributeValue> values) {

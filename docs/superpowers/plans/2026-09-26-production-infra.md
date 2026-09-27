@@ -259,7 +259,7 @@ final class RecoveryMetaStore {
     Meta read();                                                          // consistent; IllegalStateException if init has not run
     void setPaused(boolean paused);
     void setRedisIdentity(String runId, String role);                     // also clears redisChangeAt
-    void markRedisChange(Instant at);                                     // keeps the earliest unrepaired change
+    boolean markRedisChange(Instant at, String staleRunId, String staleRole); // earliest unrepaired change; no-op once the identity was replaced
 }
 // com.quince.cartrecovery.infra.redis
 final class RedisTimerStore implements TimerStore {
