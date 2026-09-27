@@ -49,7 +49,7 @@ class RedisTimerStoreTest {
     void cartIdWithDelimitersRoundTripsThroughClaimAndAck() {
         String id = "x|1:2";
         Timer t = Timer.checkAbandon(id, 3, LONG_AGO, 0);
-        assertTrue(store.upsert(t));
+        assertTrue(store.upsert(t).written());
         assertEquals(Set.of(id), store.existing(Shards.of(id, SHARDS), List.of(id)));
         assertEquals(List.of(t), store.claimDue(10));
         store.ack(t);
@@ -59,10 +59,10 @@ class RedisTimerStoreTest {
     @Test
     void upsertIsMonotonicAndEqualDataIsANoOp() {
         Timer r0 = Timer.reminder("c", 2, 0, LONG_AGO, 1);
-        assertTrue(store.upsert(r0));
-        assertFalse(store.upsert(r0));
-        assertFalse(store.upsert(Timer.checkAbandon("c", 2, LONG_AGO, 1)));
-        assertTrue(store.upsert(Timer.checkAbandon("c", 3, LONG_AGO, 1)));
+        assertTrue(store.upsert(r0).written());
+        assertFalse(store.upsert(r0).written());
+        assertFalse(store.upsert(Timer.checkAbandon("c", 2, LONG_AGO, 1)).written());
+        assertTrue(store.upsert(Timer.checkAbandon("c", 3, LONG_AGO, 1)).written());
     }
 
     @Test
@@ -139,7 +139,7 @@ class RedisTimerStoreTest {
     @Test
     void reloadsScriptsAfterScriptFlush() {
         TestRedis.sync().scriptFlush();
-        assertTrue(store.upsert(Timer.checkAbandon("c", 1, LONG_AGO, 0)));
+        assertTrue(store.upsert(Timer.checkAbandon("c", 1, LONG_AGO, 0)).written());
         assertEquals(1, store.claimDue(10).size());
     }
 }

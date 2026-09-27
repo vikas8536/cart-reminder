@@ -105,8 +105,9 @@ interface CartStateStore {
     Stream<String> openCartIds(int shard, Instant now);                                  // carts with a next step, openUntil >= now
 }
 interface TimerStore {
-    boolean upsert(Timer timer);                          // only if (version, offsetIndex) greater; equal data is a no-op
-    void remove(String cartId, long version);             // only if stored version <= version
+    record Upsert(boolean written, Optional<Timer> displaced) {}   // displaced: the stored timer the write overwrote
+    Upsert upsert(Timer timer);                           // only if (version, offsetIndex) greater; equal data is a no-op (displaces nothing)
+    Optional<Timer> remove(String cartId, long version);  // only if stored version <= version; returns the removed timer (review fixes 2026-09-28)
     List<Timer> claimDue(int limit);                      // due by the store's time source; leases them
     void release(Timer timer, Duration delay);            // re-due after delay if unchanged
     void ack(Timer timer);                                // remove if unchanged
