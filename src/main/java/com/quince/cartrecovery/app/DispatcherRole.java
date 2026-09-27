@@ -160,7 +160,7 @@ public final class DispatcherRole implements Role {
         try (ExecutorService exec = Executors.newVirtualThreadPerTaskExecutor()) {
             for (int s = 0; s < shards; s++) {
                 int shard = s;
-                exec.submit(() -> {
+                exec.execute(() -> {
                     try {
                         retryShard.accept(shard);
                     } catch (RuntimeException e) {

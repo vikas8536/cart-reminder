@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.quince.cartrecovery.Await;
+import com.quince.cartrecovery.core.Metrics;
 import com.quince.cartrecovery.infra.dynamo.DynamoSendLedger;
 import com.quince.cartrecovery.infra.dynamo.DynamoTables;
 import com.quince.cartrecovery.infra.dynamo.RecoveryMetaStore;
@@ -123,17 +124,25 @@ class DispatcherRoleIT {
             now, now.plusSeconds(60));
         RedisWatermark watermark = new RedisWatermark(RoleInfra.ctx().redis(), c.partitions());
         try (RoleThread dispatcher = new RoleThread(new DispatcherRole(), c)) {
-            RoleInfra.send(Topics.INTENTS_FAST, cart, JsonCodec.encode(intent));
-            Await.until(() -> dispatcher.metrics().get("dispatch.held") >= 1, WAIT);
-            Thread.sleep(3000);   // six poll timeouts: an unpaused partition would be redelivered about six times
-            assertEquals(1, dispatcher.metrics().get("dispatch.held"), "held partition kept being redelivered");
-            assertEquals(dispatcher.metrics().get("dispatch.token_taken"), dispatcher.metrics().get("dispatch.token_refunded"),
-                "a held partition's token spend stays flat");
-            // Catch the source partition up: the partition resumes and the intent completes (no cart, so cancelled).
-            Await.until(() -> {
-                watermark.publish(src, 1, watermark.now());
-                return dispatcher.metrics().get("dispatch.cancelled") >= 1;
-            }, WAIT);
+            try {
+                RoleInfra.send(Topics.INTENTS_FAST, cart, JsonCodec.encode(intent));
+                Await.until(() -> dispatcher.metrics().get("dispatch.held") >= 1, WAIT);
+                Thread.sleep(3000);   // six poll timeouts: an unpaused partition would be redelivered about six times
+                assertEquals(1, dispatcher.metrics().get("dispatch.held"), "held partition kept being redelivered");
+                Metrics m = dispatcher.metrics();
+                // Every token taken and not refunded must have gone into a real send (dispatcher-fast is shared with
+                // other tests behind auto.offset.reset=earliest, so a stray intent may be sent here too); this still
+                // fails if the held partition itself burns a token that neither refunds nor sends.
+                assertEquals(m.get("dispatch.token_taken") - m.get("dispatch.token_refunded"), m.get("dispatch.sent"),
+                    "every token spent beyond a refund went to a real send");
+            } finally {
+                // Catch the source partition up regardless of the assertions above, so a failure here can't leave
+                // this held intent uncommitted on dispatcher-fast for later test classes sharing that consumer group.
+                Await.until(() -> {
+                    watermark.publish(src, 1, watermark.now());
+                    return dispatcher.metrics().get("dispatch.cancelled") >= 1;
+                }, WAIT);
+            }
             assertNull(dispatcher.failure());
         }
     }
