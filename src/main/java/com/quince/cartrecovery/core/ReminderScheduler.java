@@ -18,6 +18,7 @@ import com.quince.cartrecovery.ports.TimerStore;
 import com.quince.cartrecovery.ports.Watermark;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 
@@ -29,7 +30,7 @@ import java.util.Optional;
  */
 public final class ReminderScheduler {
     static final Duration MIN_HOLD = Duration.ofSeconds(1);
-    static final Duration MAX_HOLD = Duration.ofSeconds(60);
+    static final Duration HOLD_CAP = Duration.ofSeconds(60);
     private static final TimerDecision ACK = new TimerDecision.Ack();
 
     private final RecoveryConfig config;
@@ -41,6 +42,7 @@ public final class ReminderScheduler {
     private final IntentPublisher intents;
     private final OutcomeRecorder outcomes;
     private final Metrics metrics;
+    private final Duration maxHold;
 
     public ReminderScheduler(RecoveryConfig config, DispatchConfig dispatch, CartStateStore store, TimerStore timers,
                              Watermark watermark, IntentPublisher intents, OutcomeRecorder outcomes, Metrics metrics) {
@@ -53,6 +55,7 @@ public final class ReminderScheduler {
         this.intents = intents;
         this.outcomes = outcomes;
         this.metrics = metrics;
+        this.maxHold = maxHold(config);
     }
 
     public TimerDecision onTimer(Timer timer) {
@@ -67,7 +70,7 @@ public final class ReminderScheduler {
         Instant w = watermark.current(timer.srcPartition());
         if (w.isBefore(needed)) {
             metrics.increment("timers.held");
-            return new TimerDecision.Release(holdFor(w, needed));
+            return new TimerDecision.Release(holdFor(w, needed, maxHold));
         }
         Optional<CartRecord> loaded = current(timer);
         if (loaded.isEmpty()) return ACK;
@@ -144,11 +147,21 @@ public final class ReminderScheduler {
         outcomes.record(new Outcome(null, record.cartId(), record.version(), record.arm(), OutcomeKind.ABANDONED, now, 0));
     }
 
-    /** clamp(needed - w, 1 s, 60 s); 60 s when the watermark is unknown or stale. */
-    static Duration holdFor(Instant w, Instant needed) {
-        if (w.equals(Instant.EPOCH)) return MAX_HOLD;
+    /**
+     * max(1 s, min(60 s, smallest lateness bound ÷ 4)), review fix 1: one hold can never outlast a lateness bound.
+     * 60 s at production bounds (5 min), 5 s with demo.env (20 s).
+     */
+    static Duration maxHold(RecoveryConfig config) {
+        Duration quarter = config.latenessBounds().stream().min(Comparator.naturalOrder()).orElseThrow().dividedBy(4);
+        Duration capped = quarter.compareTo(HOLD_CAP) > 0 ? HOLD_CAP : quarter;
+        return capped.compareTo(MIN_HOLD) < 0 ? MIN_HOLD : capped;
+    }
+
+    /** clamp(needed - w, 1 s, maxHold); maxHold when the watermark is unknown or stale. */
+    static Duration holdFor(Instant w, Instant needed, Duration maxHold) {
+        if (w.equals(Instant.EPOCH)) return maxHold;
         Duration gap = Duration.between(w, needed);
         if (gap.compareTo(MIN_HOLD) < 0) return MIN_HOLD;
-        return gap.compareTo(MAX_HOLD) > 0 ? MAX_HOLD : gap;
+        return gap.compareTo(maxHold) > 0 ? maxHold : gap;
     }
 }
