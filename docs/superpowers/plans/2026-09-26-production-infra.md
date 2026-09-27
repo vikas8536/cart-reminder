@@ -71,7 +71,7 @@ record LedgerKey(String cartId, long version, int offsetIndex)
 enum OutcomeKind { ABANDONED, SENT, SKIPPED_LATE, CANCELLED, DEAD, SUPERSEDED }   // SUPERSEDED: review fixes 2026-09-28
 record Outcome(String key, String cartId, long version, Arm arm, OutcomeKind kind, Instant at, int attempts)
     // key null for ABANDONED. arm is meaningful only for ABANDONED (the per-arm denominator); reminder
-    // outcomes (SENT, SKIPPED_LATE, CANCELLED, DEAD) always carry Arm.TREATMENT, since only treatment carts get intents.
+    // outcomes (SENT, SKIPPED_LATE, CANCELLED, DEAD, SUPERSEDED) always carry Arm.TREATMENT, since only treatment carts get intents.
 record DeadLetter(ReminderIntent intent, String reason, Instant at)          // REASON_POISON = "poison"
 enum Lane { FAST, SLOW; static Lane of(int offsetIndex, int fastOffsets) }   // offsetIndex < fastOffsets → FAST
 record DispatchConfig(Duration lease, Duration gatewayTimeout, Duration clockSkew, int fastOffsets)

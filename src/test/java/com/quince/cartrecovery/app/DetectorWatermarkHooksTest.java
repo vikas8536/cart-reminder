@@ -155,6 +155,24 @@ class DetectorWatermarkHooksTest {
     }
 
     @Test
+    void aCutOffDetectorStopsPublishingOnceItsFrozenTimeIsOlderThanTheHistory() {
+        broker.assignment = Set.of(P0);
+        broker.ends.put(P0, 5L);
+        broker.committed.put(P0, 5L);
+        hooks.beforePoll(broker.proxy());                  // (T1, 5)
+        broker.endOffsetsFailure = new TimeoutException("broker unreachable");
+        for (int i = 0; i < 35; i++) tick(Duration.ofSeconds(1));
+        hooks.afterCommit(broker.proxy(), Map.of(), 1);
+        assertEquals(List.of("0|1|" + T1), watermark.published, "35 s behind: still within the history");
+        assertEquals("35000", lag());
+
+        tick(Duration.ofSeconds(1));
+        hooks.afterCommit(broker.proxy(), Map.of(), 1);
+        assertEquals(1, watermark.published.size(), "36 s behind: past the history, so the entry is left to go stale");
+        assertEquals("stale", lag());
+    }
+
+    @Test
     void aBehindPartitionPublishesAnOldTimeRatherThanNothing() {
         broker.assignment = Set.of(P0);
         broker.committed.put(P0, 0L);

@@ -62,7 +62,7 @@ public final class Pipeline {
     private final Dispatcher dispatcher;
     private final Reconciler reconciler;
 
-    private long tokensTaken;
+    private long netTokensSpent;
     private Duration dispatchDelay = Duration.ZERO;
     private boolean stalled;
     private final List<CartEvent> buffered = new ArrayList<>();
@@ -77,10 +77,10 @@ public final class Pipeline {
         this.sink = new RecordingNotificationSink(clock);
         SendBudget budget = new SendBudget() {
             @Override public boolean tryAcquire(Lane lane) {
-                tokensTaken++;
+                netTokensSpent++;
                 return true;
             }
-            @Override public void release(Lane lane) { tokensTaken--; }
+            @Override public void release(Lane lane) { netTokensSpent--; }
         };
         this.detector = new AbandonmentDetector(config, store, timers, arms, outcomes, metrics);
         this.scheduler = new ReminderScheduler(config, DISPATCH, store, timers, watermark, intents, outcomes, metrics);
@@ -221,5 +221,5 @@ public final class Pipeline {
     public InMemoryDeadLetterQueue dlq() { return dlq; }
     public Metrics metrics() { return metrics; }
     /** Send tokens taken from the (unlimited) budget and not returned: one per actual send attempt. */
-    public long tokensTaken() { return tokensTaken; }
+    public long netTokensSpent() { return netTokensSpent; }
 }
