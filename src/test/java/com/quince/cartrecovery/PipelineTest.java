@@ -90,7 +90,7 @@ class PipelineTest {
         p.ingest(edited(1, min(0)));
         p.outage(hrs(30));
         p.advanceTo(at(hrs(30)));
-        assertEquals(3, p.metrics().get("reminders.skipped_late"));
+        assertEquals(3, p.metrics().get("dispatch.skipped_late_precheck"));
         assertEquals(0, p.sink().sent().size());
         assertEquals(0, p.timers().size());
 
@@ -100,7 +100,7 @@ class PipelineTest {
         p.advanceTo(at(hrs(48)));
 
         assertEquals(0, p.sink().sent().size());
-        assertEquals(3, p.metrics().get("reminders.skipped_late"));
+        assertEquals(3, p.metrics().get("dispatch.skipped_late_precheck"));
     }
 
     @Test
@@ -118,8 +118,8 @@ class PipelineTest {
 
         assertEquals(List.of(at(min(30)), at(hrs(24))), sentTimes(p));
         assertEquals(List.of("cart-1:1:0", "cart-1:1:2"),
-            p.sink().sent().stream().map(s -> s.intent().idempotencyKey()).toList());
-        assertEquals(0, p.metrics().get("reminders.skipped_late"));
+            p.sink().sent().stream().map(s -> s.message().key()).toList());
+        assertEquals(0, p.metrics().get("dispatch.skipped_late_precheck"));
     }
 
     @Test

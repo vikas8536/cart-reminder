@@ -8,13 +8,14 @@ import java.util.List;
 public final class InMemoryDeadLetterQueue implements DeadLetterQueue {
     private final List<DeadLetter> letters = new ArrayList<>();
 
-    @Override public void add(DeadLetter letter) { letters.add(letter); }
+    @Override public synchronized void add(DeadLetter letter) { letters.add(letter); }
 
-    @Override public List<DeadLetter> drain() {
+    /** Removes and returns everything, for replay. */
+    public synchronized List<DeadLetter> drain() {
         List<DeadLetter> out = List.copyOf(letters);
         letters.clear();
         return out;
     }
 
-    @Override public int size() { return letters.size(); }
+    public synchronized int size() { return letters.size(); }
 }

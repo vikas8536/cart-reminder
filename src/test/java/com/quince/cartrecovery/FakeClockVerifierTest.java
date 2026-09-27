@@ -6,19 +6,23 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.quince.cartrecovery.model.Arm;
+import com.quince.cartrecovery.model.CartRecord;
 import com.quince.cartrecovery.model.CartStatus;
+import com.quince.cartrecovery.model.Outcome;
+import com.quince.cartrecovery.model.OutcomeKind;
 import com.quince.cartrecovery.model.RecoveryConfig;
 import com.quince.cartrecovery.model.SendResult;
 import com.quince.cartrecovery.model.Timer;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * End-to-end scenarios from the spec, section 14. Each drives the pipeline on a fake clock
- * and asserts exactly which reminders would have fired, and when.
+ * End-to-end scenarios from the spec, section 14, plus the production-infra spec §8.2 scenarios (16 to 18).
+ * Each drives the pipeline on a fake clock and asserts exactly which reminders would have fired, and when.
  */
 class FakeClockVerifierTest {
 
@@ -34,8 +38,12 @@ class FakeClockVerifierTest {
         return p.sink().sent().stream().map(s -> s.sentAt()).toList();
     }
 
+    private static List<Outcome> abandonedOutcomes(Pipeline p) {
+        return p.outcomes().all().stream().filter(o -> o.kind() == OutcomeKind.ABANDONED).toList();
+    }
+
     private static List<String> sentKeys(Pipeline p) {
-        return p.sink().sent().stream().map(s -> s.intent().idempotencyKey()).toList();
+        return p.sink().sent().stream().map(s -> s.message().key()).toList();
     }
 
     @Test @DisplayName("1. single edit fires at 30m, 1h, 24h, one send each")
@@ -130,8 +138,10 @@ class FakeClockVerifierTest {
         p.advanceTo(at(hrs(48)));
 
         assertEquals(List.of(at(min(30)), at(hrs(1)), at(hrs(24))), sentTimes(p));
-        assertEquals(1, p.metrics().get("reminders.duplicate_timer"));
-        assertEquals(1, p.metrics().get("timers.wrong_status"));
+        assertEquals(1, p.metrics().get("dispatch.duplicate"));
+        assertEquals(0, p.metrics().get("timers.wrong_status"));
+        assertEquals(2, abandonedOutcomes(p).size());
+        assertEquals(1, abandonedOutcomes(p).stream().map(o -> o.cartId() + ":" + o.version()).distinct().count());
     }
 
     @Test @DisplayName("7. out-of-order events: the older version is ignored")
@@ -189,7 +199,7 @@ class FakeClockVerifierTest {
 
         assertEquals(List.of(), sentTimes(p));
         assertEquals(0, p.dlq().size());
-        assertEquals(0, p.outbox().size());
+        assertEquals(Optional.of("SKIPPED_LATE"), p.ledger().status("cart-1:1:0"));
         assertEquals(1, p.metrics().get("dispatch.skipped_late"));
     }
 
@@ -204,7 +214,7 @@ class FakeClockVerifierTest {
         p.replayDeadLetters();
 
         assertEquals(List.of(), sentTimes(p));
-        assertEquals(0, p.outbox().size());
+        assertEquals(Optional.of("CANCELLED"), p.ledger().status("cart-1:1:0"));
         assertEquals(1, p.metrics().get("dispatch.cancelled"));
         assertEquals(0, p.metrics().get("dispatch.skipped_late"));
     }
@@ -248,7 +258,7 @@ class FakeClockVerifierTest {
         p.advanceTo(at(hrs(48)));
 
         assertEquals(List.of(at(hrs(24))), sentTimes(p));
-        assertEquals(2, p.metrics().get("reminders.skipped_late"));
+        assertEquals(2, p.metrics().get("dispatch.skipped_late_precheck"));
         assertEquals(1, p.ledger().size());
     }
 
@@ -293,6 +303,65 @@ class FakeClockVerifierTest {
     void configValidation() {
         assertThrows(IllegalArgumentException.class, () ->
             RecoveryConfig.defaults().withWindow(Duration.ofMinutes(31)));
+    }
+
+    @Test @DisplayName("16. a lagging detector holds the reminder; it is cancelled once the detector catches up")
+    void laggingDetectorHoldsTheReminder() {
+        Pipeline p = pipeline();
+        p.ingest(edited(1, min(0)));
+        p.advanceTo(at(min(40)));
+        p.stallDetector();
+        p.ingest(purchased(2, min(45)));
+
+        p.advanceTo(at(min(62)));
+        assertEquals(List.of(at(min(30))), sentTimes(p));
+        assertEquals(CartStatus.ABANDONED, p.store().get(CART).orElseThrow().status());
+        assertTrue(p.metrics().get("dispatch.held") > 0);
+        assertEquals(Optional.empty(), p.ledger().status("cart-1:1:1"));
+
+        p.catchUpDetector();
+        p.advanceTo(at(hrs(48)));
+
+        assertEquals(List.of(at(min(30))), sentTimes(p));
+        assertEquals(Optional.of("CANCELLED"), p.ledger().status("cart-1:1:1"));
+        assertEquals(1, p.metrics().get("dispatch.cancelled"));
+        assertEquals(CartStatus.CLOSED, p.store().get(CART).orElseThrow().status());
+    }
+
+    @Test @DisplayName("17. a CHECK_ABANDON redelivered after a crash between abandonment and the reminder upsert still sends")
+    void redeliveredCheckAfterCrash() {
+        Pipeline p = pipeline();
+        p.ingest(edited(1, min(0)));
+        p.advanceTo(at(min(29)));
+
+        // The scheduler claims the check at 30m, marks the cart abandoned, records the outcome, and dies before
+        // upserting REMINDER 0. The check stays leased and is redelivered when the lease ends (90 s later).
+        p.clock().set(at(min(30)));
+        assertEquals(1, p.timers().claimDue(10).size());
+        CartRecord active = p.store().get(CART).orElseThrow();
+        p.store().markAbandoned(active, active.startsWith(active.lastActivityAt(), at(min(30)), Duration.ofDays(7)), true);
+        p.outcomes().record(new Outcome(null, CART, 1, Arm.TREATMENT, OutcomeKind.ABANDONED, at(min(30)), 0));
+
+        p.advanceTo(at(hrs(48)));
+
+        assertEquals(List.of(at(min(30)).plusSeconds(90), at(hrs(1)), at(hrs(24))), sentTimes(p));
+        assertEquals(List.of("cart-1:1:0", "cart-1:1:1", "cart-1:1:2"), sentKeys(p));
+        assertEquals(2, abandonedOutcomes(p).size());
+        assertEquals(1, abandonedOutcomes(p).stream().map(o -> o.cartId() + ":" + o.version()).distinct().count());
+    }
+
+    @Test @DisplayName("18. a dispatch delay past the lateness bound skips at the pre-check, spending no token")
+    void dispatchDelayPastTheBound() {
+        Pipeline p = pipeline();
+        p.setDispatchDelay(min(6));
+        p.ingest(edited(1, min(0)));
+        p.advanceTo(at(hrs(48)));
+
+        assertEquals(List.of(at(hrs(24)).plus(min(6))), sentTimes(p));
+        assertEquals(2, p.metrics().get("dispatch.skipped_late_precheck"));
+        assertEquals(1, p.tokensTaken());
+        assertEquals(1, p.ledger().size());
+        assertEquals(1, p.sink().attempts());
     }
 
     @Test @DisplayName("many carts interleaved keep independent schedules")

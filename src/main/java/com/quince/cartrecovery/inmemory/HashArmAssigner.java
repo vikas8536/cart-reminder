@@ -5,6 +5,9 @@ import com.quince.cartrecovery.ports.ArmAssigner;
 
 /** Deterministic bucketing by shopper key and experiment salt. */
 public final class HashArmAssigner implements ArmAssigner {
+    /** The one experiment salt: the demo, every infra role and loadgen's Expected must bucket carts identically. */
+    public static final String SALT = "cart-recovery-v1";
+
     private final String salt;
     private final int holdoutPercent;
 
