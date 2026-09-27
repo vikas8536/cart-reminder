@@ -7,6 +7,7 @@ import com.quince.cartrecovery.infra.dynamo.DynamoSendLedger;
 import com.quince.cartrecovery.infra.dynamo.DynamoTables;
 import com.quince.cartrecovery.infra.dynamo.RecoveryMetaStore;
 import com.quince.cartrecovery.infra.kafka.JsonCodec;
+import com.quince.cartrecovery.infra.kafka.KafkaOutcomeRecorder;
 import com.quince.cartrecovery.infra.kafka.Topics;
 import com.quince.cartrecovery.infra.redis.RedisMeta;
 import com.quince.cartrecovery.infra.redis.RedisTimerStore;
@@ -54,7 +55,8 @@ public final class ReconcilerRole implements Role {
             TimerStore timers = new RedisTimerStore(ctx.redis(), config.shards(), config.dispatch().lease());
             Reconciler reconciler = new Reconciler(config.recovery(),
                 new DynamoCartStateStore(ctx.dynamo(), DynamoTables.CARTS, config.recovery(), config.shards()), timers,
-                new DynamoSendLedger(ctx.dynamo(), DynamoTables.SEND_LEDGER, config.dispatch().lease(), config.shards()), Instant::now, metrics);
+                new DynamoSendLedger(ctx.dynamo(), DynamoTables.SEND_LEDGER, config.dispatch().lease(), config.shards()),
+                new KafkaOutcomeRecorder(ctx.producer()), Instant::now, metrics);
             Cycle cycle = new Cycle(config, new RedisMeta(ctx.redis()), timers, reconciler, new RecoveryMetaStore(ctx.dynamo()), health, metrics);
             AtomicBoolean running = new AtomicBoolean(true);
             RoleContext.runLoops(() -> running.set(false), List.of(() -> cycle.loop(running)));

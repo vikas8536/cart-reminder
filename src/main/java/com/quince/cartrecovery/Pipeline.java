@@ -82,11 +82,11 @@ public final class Pipeline {
             }
             @Override public void release(Lane lane) { tokensTaken--; }
         };
-        this.detector = new AbandonmentDetector(config, store, timers, arms, metrics);
+        this.detector = new AbandonmentDetector(config, store, timers, arms, outcomes, metrics);
         this.scheduler = new ReminderScheduler(config, DISPATCH, store, timers, watermark, intents, outcomes, metrics);
         this.dispatcher = new Dispatcher(config, DISPATCH, store, ledger, watermark, budget, sink, outcomes, dlq,
             clock, metrics, () -> 1.0);
-        this.reconciler = new Reconciler(config, store, timers, ledger, clock, metrics);
+        this.reconciler = new Reconciler(config, store, timers, ledger, outcomes, clock, metrics);
     }
 
     public static Pipeline withDefaults(Instant start) {

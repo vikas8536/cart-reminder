@@ -2,7 +2,6 @@ package com.quince.cartrecovery.app;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -15,6 +14,7 @@ import com.quince.cartrecovery.infra.redis.RedisTimerStore;
 import com.quince.cartrecovery.model.CartEvent;
 import com.quince.cartrecovery.model.CartItem;
 import com.quince.cartrecovery.inmemory.InMemoryCartStateStore;
+import com.quince.cartrecovery.inmemory.InMemoryOutcomeRecorder;
 import com.quince.cartrecovery.inmemory.InMemorySendLedger;
 import com.quince.cartrecovery.model.Shards;
 import com.quince.cartrecovery.ports.CartStateStore;
@@ -58,8 +58,8 @@ class ReconcilerRoleIT {
             RoleInfra.ctx().redis().sync().del(ReconcilerRole.EPOCH_KEY);
             assertFalse(timers.existing(shard, List.of(cart)).contains(cart));
             Await.until(() -> timers.existing(shard, List.of(cart)).contains(cart), WAIT);
-            assertTrue(reconciler.metrics().get("reconciler.sweeps") >= 2);
-            assertNotNull(RoleInfra.ctx().redis().sync().get(ReconcilerRole.EPOCH_KEY));
+            Await.until(() -> reconciler.metrics().get("reconciler.sweeps") >= 2, WAIT);
+            Await.until(() -> RoleInfra.ctx().redis().sync().get(ReconcilerRole.EPOCH_KEY) != null, WAIT);
             assertNull(reconciler.failure());
         }
     }
@@ -93,7 +93,7 @@ class ReconcilerRoleIT {
             });
         Metrics metrics = new Metrics();
         Reconciler reconciler = new Reconciler(c.recovery(), blocking, timers,
-            new InMemorySendLedger(c.dispatch().lease(), c.shards()), Instant::now, metrics);
+            new InMemorySendLedger(c.dispatch().lease(), c.shards()), new InMemoryOutcomeRecorder(), Instant::now, metrics);
         ReconcilerRole.Cycle cycle = new ReconcilerRole.Cycle(c, redis, timers, reconciler, meta, new Health(), metrics);
         AtomicBoolean running = new AtomicBoolean(true);
         Thread loop = Thread.ofPlatform().start(() -> cycle.loop(running));
