@@ -44,8 +44,8 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 class EndToEndIT {
     static final Duration WAIT = Duration.ofSeconds(25);
     static final List<CartItem> ITEMS = List.of(new CartItem("SKU-1", "Linen Shirt", 1, 4990));
-    static final List<OutcomeKind> PRECEDENCE =
-        List.of(OutcomeKind.SENT, OutcomeKind.DEAD, OutcomeKind.CANCELLED, OutcomeKind.SKIPPED_LATE);
+    static final List<OutcomeKind> PRECEDENCE = List.of(OutcomeKind.SENT, OutcomeKind.DEAD, OutcomeKind.CANCELLED,
+        OutcomeKind.SKIPPED_LATE, OutcomeKind.SUPERSEDED);
 
     static TopicTail sends;
     static TopicTail outcomes;
@@ -223,11 +223,15 @@ class EndToEndIT {
         sleepUntil(t0.plusSeconds(14));   // reminder 0 due at +10 s: held by the stale watermark
         assertEquals(List.of(), sentKeys(cart));
         start(new DetectorRole(), c);
+        // Review fix 2: the held reminder resolves to CANCELLED (its intent was published) or SUPERSEDED (its timer was
+        // still pending when the purchase landed), never to no outcome.
         Await.until(() -> {
             Outcome o = resolved(cart).get(key(cart, 1, 0));
-            return o != null && o.kind() == OutcomeKind.CANCELLED;
+            return o != null && (o.kind() == OutcomeKind.CANCELLED || o.kind() == OutcomeKind.SUPERSEDED);
         }, WAIT);
         assertEquals(List.of(), sentKeys(cart));
+        assertTrue(resolved(cart).values().stream()
+            .allMatch(o -> o.kind() == OutcomeKind.CANCELLED || o.kind() == OutcomeKind.SUPERSEDED), resolved(cart).toString());
     }
 
     private RoleThread start(Role role, InfraConfig config) {
@@ -260,7 +264,7 @@ class EndToEndIT {
         return sends.records(prefix).stream().map(r -> JsonCodec.decodeSinkSend(r.value()).key()).toList();
     }
 
-    /** One outcome per key by precedence SENT > DEAD > CANCELLED > SKIPPED_LATE; ABANDONED has no key. */
+    /** One outcome per key by precedence SENT > DEAD > CANCELLED > SKIPPED_LATE > SUPERSEDED; ABANDONED has no key. */
     private static Map<String, Outcome> resolved(String prefix) {
         Map<String, Outcome> best = new HashMap<>();
         for (var r : outcomes.records(prefix)) {

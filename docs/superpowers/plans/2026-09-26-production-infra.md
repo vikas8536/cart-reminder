@@ -68,7 +68,7 @@ record ReminderIntent(String key, String cartId, long version, int offsetIndex, 
 record ReminderMessage(String key, String cartId, String shopperKey, String firstName, List<CartItem> items)
 record LedgerKey(String cartId, long version, int offsetIndex)
     // String toString() → "cartId:version:offsetIndex"; static LedgerKey parse(String) parses from the right
-enum OutcomeKind { ABANDONED, SENT, SKIPPED_LATE, CANCELLED, DEAD }
+enum OutcomeKind { ABANDONED, SENT, SKIPPED_LATE, CANCELLED, DEAD, SUPERSEDED }   // SUPERSEDED: review fixes 2026-09-28
 record Outcome(String key, String cartId, long version, Arm arm, OutcomeKind kind, Instant at, int attempts)
     // key null for ABANDONED. arm is meaningful only for ABANDONED (the per-arm denominator); reminder
     // outcomes (SENT, SKIPPED_LATE, CANCELLED, DEAD) always carry Arm.TREATMENT, since only treatment carts get intents.
@@ -140,7 +140,7 @@ interface SendBudget { boolean tryAcquire(Lane lane); void release(Lane lane); }
 ```java
 Metrics                    // unchanged API: increment(String), get(String), snapshot(); thread-safe after A1
 ReminderPolicy(RecoveryConfig)                          boolean eligible(CartRecord, Instant now)   // unchanged
-AbandonmentDetector(RecoveryConfig, CartStateStore, TimerStore, ArmAssigner, Metrics)
+AbandonmentDetector(RecoveryConfig, CartStateStore, TimerStore, ArmAssigner, OutcomeRecorder, Metrics)
                                                         void handle(CartEvent event, int srcPartition)
 ReminderScheduler(RecoveryConfig, DispatchConfig, CartStateStore, TimerStore, Watermark,
                   IntentPublisher, OutcomeRecorder, Metrics)
