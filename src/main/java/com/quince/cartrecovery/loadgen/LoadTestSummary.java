@@ -33,6 +33,8 @@ public record LoadTestSummary(
     /** Final review: unexplained missing split into pure lateness and possible silent loss; their sum is unexplainedMissing. */
     long supersededAfterSendBy,
     long neverSupersededNoOutcome,
+    /** Review fix 2: the pre-outcome script inference (MissingBreakdown), kept as a cross-check. */
+    MissingBreakdown.Result scriptInference,
     /** Fix round 2: outcomes recorded for a key {@link Expected} never counted; kept out of every other
      * count (see {@link CorrectnessSummary}) and reported here instead of silently dropped. */
     long outcomesOnNonExpectedKeys,

@@ -52,26 +52,33 @@ public final class Report {
         md.append("\n");
 
         md.append("## Outcomes\n\n");
-        md.append("Sent, skipped late, cancelled and dead below are counted only over expected keys (fix round 2); ")
+        md.append("Every count below is resolved from `reminder-outcomes`, one kind per key by precedence ")
+          .append("SENT > DEAD > CANCELLED > SKIPPED_LATE > SUPERSEDED, and counted only over expected keys (fix round 2); ")
           .append("see \"Outcomes on non-expected keys\" for the rest.\n\n");
-        md.append("| Expected | Sent | Skipped late | Cancelled | Dead |\n|---|---|---|---|---|\n");
+        md.append("| Expected | Sent | Skipped late | Cancelled | Dead | Superseded |\n|---|---|---|---|---|---|\n");
         md.append("| ").append(s.expectedSends()).append(" | ").append(s.sentSends()).append(" | ")
-          .append(s.skippedLate()).append(" | ").append(s.cancelled()).append(" | ").append(s.dead()).append(" |\n\n");
+          .append(s.skippedLate()).append(" | ").append(s.cancelled()).append(" | ").append(s.dead()).append(" | ")
+          .append(s.supersededBeforeSend() + s.supersededAfterSendBy()).append(" |\n\n");
 
         md.append("## Correctness at the sink\n\n");
         md.append("- Duplicate sends: **").append(s.duplicateSends()).append("**\n");
         md.append("- Post-purchase sends: **").append(s.postPurchaseSends()).append("**\n");
-        md.append("- Superseded before send (a resume or purchase superseded the cycle at or before that offset's ")
-          .append("sendBy — a correct non-send, excluded from unexplained missing): ").append(s.supersededBeforeSend()).append("\n");
-        md.append("- Superseded after sendBy (pure lateness: a resume or purchase superseded the cycle only after that ")
-          .append("offset's sendBy): ").append(s.supersededAfterSendBy()).append("\n");
-        md.append("- Never superseded, no outcome (the cart never moved on, yet no SENT, SKIPPED_LATE, CANCELLED or DEAD ")
-          .append("was recorded — possible silent loss): ").append(s.neverSupersededNoOutcome()).append("\n");
+        md.append("- Superseded before sendBy (a SUPERSEDED outcome at or before that offset's sendBy: the cart moved on ")
+          .append("first — a correct non-send, excluded from unexplained missing): ").append(s.supersededBeforeSend()).append("\n");
+        md.append("- Superseded after sendBy (pure lateness: a SUPERSEDED outcome only after that offset's sendBy): ")
+          .append(s.supersededAfterSendBy()).append("\n");
+        md.append("- Never superseded, no outcome (an expected key with no outcome at all — possible silent loss): ")
+          .append(s.neverSupersededNoOutcome()).append("\n");
         md.append("- Outcomes on non-expected keys (an outcome recorded for a key Expected never counted — e.g. a ")
           .append("real-vs-nominal timing edge at a cycle boundary; excluded from every count above so it can't ")
           .append("silently cancel out a real miss): ").append(s.outcomesOnNonExpectedKeys()).append("\n");
         md.append("- Unexplained missing (superseded after sendBy + never superseded, no outcome): ").append(s.unexplainedMissing())
-          .append(" (").append(String.format("%.4f", s.unexplainedMissingRatio() * 100)).append("% of expected)\n\n");
+          .append(" (").append(String.format("%.4f", s.unexplainedMissingRatio() * 100)).append("% of expected)\n");
+        MissingBreakdown.Result inferred = s.scriptInference();
+        md.append("- Script inference cross-check (the pre-outcome method, from the workload script alone, over keys with ")
+          .append("no SENT, SKIPPED_LATE, CANCELLED or DEAD outcome): superseded before send ").append(inferred.supersededBeforeSend())
+          .append(", superseded after sendBy ").append(inferred.supersededAfterSendBy())
+          .append(", never superseded ").append(inferred.neverSupersededNoOutcome()).append("\n\n");
 
         md.append("## Machine\n\n");
         md.append("- Cores: ").append(s.machineCores()).append("\n");

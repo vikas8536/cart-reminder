@@ -120,7 +120,7 @@ public final class LoadgenRole implements Role {
                 }
 
                 writeReport(config, health, runPrefix, rate, duration, testStart, publishFinished.get(), workload,
-                    expectedKeys, assigner, purchaseAtByCart, sampler, collector, finalReadCaughtUp.get());
+                    expectedKeys, assigner, purchaseAtByCart, sampler, collector, finalReadCaughtUp.get(), shift);
             }
         } finally {
             redisClient.shutdown();
@@ -130,7 +130,7 @@ public final class LoadgenRole implements Role {
     private static void writeReport(InfraConfig config, Health health, String runPrefix, double rate, Duration nominalDuration,
                               Instant testStart, Instant publishFinished, Workload.Result workload, Set<String> expectedKeys,
                               ArmAssigner assigner, Map<String, Instant> purchaseAtByCart, LagSampler sampler,
-                              OutcomeCollector collector, boolean finalReadCaughtUp) {
+                              OutcomeCollector collector, boolean finalReadCaughtUp, Duration shift) {
         List<SinkSend> sends = collector.sinkSends();
         List<OutcomeRow> outcomes = collector.outcomes();
 
@@ -139,7 +139,7 @@ public final class LoadgenRole implements Role {
         // Fix round 2: sent/skippedLate/cancelled/dead are restricted to expectedKeys inside here, so an
         // outcome on a non-expected key can't silently cancel out a real miss (see CorrectnessSummary).
         CorrectnessSummary.Result correctness = CorrectnessSummary.compute(expectedKeys, outcomes, workload.scripts(),
-            config.recovery(), assigner);
+            config.recovery(), assigner, shift);
 
         Map<String, Percentiles.Result> latencyByLane = Map.of(
             "fast", Percentiles.compute(collector.fastLatencies(), testStart, Duration.ofSeconds(30)),
@@ -157,7 +157,7 @@ public final class LoadgenRole implements Role {
             latencyByLane,
             expectedKeys.size(), correctness.sent(), correctness.skippedLate(), correctness.cancelled(), correctness.dead(),
             duplicates, postPurchase, correctness.supersededBeforeSend(), correctness.supersededAfterSendBy(),
-            correctness.neverSupersededNoOutcome(),
+            correctness.neverSupersededNoOutcome(), correctness.scriptInference(),
             correctness.outcomesOnNonExpectedKeys(), correctness.unexplainedMissing(), correctness.unexplainedMissingRatio(),
             !finalReadCaughtUp,
             Runtime.getRuntime().availableProcessors(), Runtime.getRuntime().maxMemory());
