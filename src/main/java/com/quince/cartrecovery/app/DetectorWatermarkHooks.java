@@ -22,9 +22,11 @@ import org.apache.kafka.common.TopicPartition;
  * empty polls and backoff: for each assigned partition publish T of the newest retained snapshot whose E[p] is at or
  * below the committed position, however old, so a lagging detector reports "behind by X" instead of going stale.
  * A detector cut off from the broker keeps republishing its last satisfied time, frozen: both gates hold as they would
- * on a stale entry, and the lag stays visible (a deliberate deviation from spec §5.4's "goes stale"). Only a partition
- * behind every retained snapshot, by then past every lateness bound, writes nothing; /ready then shows
- * {@code watermark.lag_ms.p<n>: stale}. The reported lag is the latest Redis TIME read minus the published time.
+ * on a stale entry, and the lag stays visible (a deliberate deviation from spec §5.4's "goes stale"). Once that time is
+ * more than {@code history} behind the latest Redis TIME it can no longer gate any send, so it stops being published
+ * and the entry goes stale after 5 s; otherwise a cut-off replica would keep its old, higher generation fresh and
+ * fence out a consumer-group reset's new owners (wmSet accepts a lower generation only on a stale entry). A partition
+ * behind every retained snapshot likewise writes nothing; /ready then shows {@code watermark.lag_ms.p<n>: stale}. The reported lag is the latest Redis TIME read minus the published time.
  * Poll thread only.
  */
 final class DetectorWatermarkHooks implements BatchConsumerLoop.Hooks<byte[]> {
@@ -36,6 +38,7 @@ final class DetectorWatermarkHooks implements BatchConsumerLoop.Hooks<byte[]> {
     private final Health health;
     private final Metrics metrics;
     private final LongSupplier nanoTime;
+    private final Duration history;
     private final WatermarkSnapshots snapshots;
     private final Map<TopicPartition, Long> committed = new HashMap<>();
     private boolean attempted;
@@ -47,6 +50,7 @@ final class DetectorWatermarkHooks implements BatchConsumerLoop.Hooks<byte[]> {
         this.health = health;
         this.metrics = metrics;
         this.nanoTime = nanoTime;
+        this.history = history;
         this.snapshots = new WatermarkSnapshots(KEEP, history);
     }
 
@@ -82,7 +86,8 @@ final class DetectorWatermarkHooks implements BatchConsumerLoop.Hooks<byte[]> {
         for (TopicPartition p : assigned) {
             Long position = committed.get(p);
             Optional<Instant> t = position == null ? Optional.empty() : snapshots.satisfied(p, position);
-            if (t.isEmpty()) {   // behind every retained snapshot: write nothing, the entry goes stale after 5 s
+            if (t.isEmpty() || Duration.between(t.get(), redisNow).compareTo(history) > 0) {
+                // behind every retained snapshot, or a frozen time past the history: write nothing, stale after 5 s
                 health.setReady("watermark.lag_ms.p" + p.partition(), "stale");
                 continue;
             }
