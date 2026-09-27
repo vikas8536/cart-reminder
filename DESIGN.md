@@ -329,27 +329,31 @@ The reconciler role runs a 1 s tick (§7 covers what a rebuild does).
 
 ## 13. Measured results and known limitations
 
-The recorded run is `docs/load-reports/2026-09-26T21-41-08.md`. Every role and every container shared one 12-core laptop, so the figures are a floor for that machine, not a capacity figure for the design.
+The recorded runs are `docs/load-reports/2026-09-26T21-41-08.md` (before review fixes 1–3) and `docs/load-reports/2026-09-27T21-56-27.md` (after). Every role and every container shared one 12-core laptop, so the figures are a floor for that machine, not a capacity figure for the design.
 
-**Rate step-down.** 5,000 events/s (the §2 baseline) was aborted after about 90 s, with detector lag rising from about 33k to 242k. 1,000/s was rejected with lag still climbing past 21k. 500/s was rejected because lag trended upward without bound. 250/s held: lag peaked at about 1.4k and drained to 0. The detector was the bottleneck at every rate. At 250/s target, the achieved rate was 87.3 events/s over an 859 s publish span, because the workload's resume and purchase tails stretch the span well past the nominal 300 s.
+**Rate step-down.** 5,000 events/s (the §2 baseline) was aborted after about 90 s, with detector lag rising from about 33k to 242k. 1,000/s was rejected with lag still climbing past 21k. 500/s was rejected because lag trended upward without bound. 250/s held: lag peaked at about 1.4k and drained to 0. The detector was the bottleneck at every rate. At 250/s target, the achieved rate was 87.3 events/s over an 859 s publish span, because the workload's resume and purchase tails stretch the span well past the nominal 300 s. The after-fix run achieved 84.5 events/s over 887 s, with detector lag peaking at only 42, so it ran under less machine pressure than the before run (see its comparison section).
 
 **250/s against the §3 targets** (`demo.env` timings):
 
-| Measure | Target | Measured |
-|---|---|---|
-| Sent on time | 99.5% | 73.6% (32,108 of 43,635) |
-| Skipped late | counted, never sent | 22.6% (9,860), mostly the 60 s `MAX_HOLD` on a stale watermark exceeding the 20 to 30 s demo bounds (§11), plus detector lag |
-| Unexplained missing | under 0.1% | 0.35% and 2.1% in the two runs measured (the report records the second, 917 keys); unstable near machine capacity |
-| Duplicate sends | under 0.01% | 0 |
-| Post-purchase sends | under 0.01% | 0 |
+| Measure | Target | Before fixes | After fixes |
+|---|---|---|---|
+| Sent on time | 99.5% | 73.6% (32,108 of 43,635) | 99.6% (43,666 of 43,857) |
+| Skipped late | counted, never sent | 22.6% (9,860), mostly the fixed 60 s stale hold exceeding the 20 to 30 s demo bounds | 0.0% (0) |
+| Superseded | counted, never sent | not recorded (640 inferred from the script) | before sendBy 191, after sendBy 0 |
+| Never superseded, no outcome | 0 | not split | 0 |
+| Unexplained missing | under 0.1% | 2.1% (917); 0.35% in an earlier run | 0.0% (0) |
+| Duplicate sends | under 0.01% | 0 | 0 |
+| Post-purchase sends | under 0.01% | 0 | 0 |
 
-The recorded run predates the split of unexplained missing into "superseded after sendBy" and "never superseded, no outcome" (§6), so its 917 is not broken down.
+After the fixes, skipped-late fell to 0 and unexplained missing to 0, meeting both targets, though that run's detector lag peaked at 42 against 1,415 before, so it was less stressed and one run cannot show the fixes alone account for the whole drop (`docs/load-reports/2026-09-27T21-56-27.md`, comparison section).
 
 **Known limitations.**
 
 - Detector throughput limits the local stack to about 250 events/s, far below the 5,000/s baseline. It has not been measured on dedicated hardware.
-- The scheduler's fixed 60 s `MAX_HOLD` on a stale watermark is longer than short lateness bounds, so at demo timings a stale partition turns into skipped-late reminders.
-- A reminder superseded before its intent is published leaves no outcome and has no dedicated counter (§6). Only the load test's script-based accounting separates it from a silent loss.
+- A crash or a failed outcome produce between the detector's timer write and its `SUPERSEDED` outcome loses that outcome; the key then counts as "never superseded, no outcome" (§6). A crash between a reconciler rebuild's upsert and its `SKIPPED_LATE` outcome loses that outcome for good, because the next sweep skips the already-rebuilt cart.
+- A reminder due exactly at the superseding event is recorded `SUPERSEDED` but the load test's `Expected` does not count it, so it is reported under "outcomes on non-expected keys" rather than as superseded (§6).
+- Consumers use the client's default assignor list (eager range first) with no static membership. The cooperative-sticky assignor and static membership (`group.instance.id`) are deferred, so every rebalance, including each step of a rolling restart, revokes all of a group's partitions at once.
+- The send budget is per replica; there is no global send-rate limit across dispatcher replicas.
 - The guardrails have no automatic thresholds. Pausing is a manual `recovery-meta.paused` flip (§3).
 - How long a real gateway honours the idempotency key has not been checked. The two at-most-once exceptions depend on it (§15).
 - Only DynamoDB Local has been tested, never real AWS. The code retries unprocessed `BatchGetItem` keys, but that path, GSI propagation lag and throttling have never been exercised against real DynamoDB.
