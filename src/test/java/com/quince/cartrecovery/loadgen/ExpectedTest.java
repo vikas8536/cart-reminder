@@ -5,8 +5,10 @@ import com.quince.cartrecovery.model.RecoveryConfig;
 import com.quince.cartrecovery.ports.ArmAssigner;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -87,5 +89,17 @@ class ExpectedTest {
         Set<String> keys = Expected.keys(List.of(script), capOfOne, ALL_TREATMENT);
 
         assertTrue(keys.stream().noneMatch(k -> k.startsWith("cart-1:2:")));
+    }
+
+    @Test void sendByIsEachExpectedKeysDueTimePlusItsLatenessBound() {
+        CartScript script = new CartScript("cart-1", "shopper-1", List.of(new Cycle(1L, T0, null)));
+
+        Map<String, Instant> sendBy = Expected.sendBy(List.of(script), CONFIG, ALL_TREATMENT);
+
+        assertEquals(Map.of(
+            "cart-1:1:0", T0.plus(Duration.ofMinutes(35)),
+            "cart-1:1:1", T0.plus(Duration.ofMinutes(65)),
+            "cart-1:1:2", T0.plus(Duration.ofHours(24)).plus(Duration.ofMinutes(30))), sendBy);
+        assertEquals(sendBy.keySet(), Expected.keys(List.of(script), CONFIG, ALL_TREATMENT));
     }
 }
